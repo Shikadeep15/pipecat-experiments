@@ -163,6 +163,46 @@ python 06_latency_optimized_bot.py --model gpt-4-turbo
 | 🟠 ACCEPTABLE | 1500-2000ms | Noticeable but usable |
 | 🔴 NEEDS WORK | >2000ms | Feels slow |
 
+### 07_function_calling_bot.py (Project 5)
+**Voice bot with function calling / tool use.**
+
+The LLM can call functions based on user queries:
+
+| Function | Trigger | Example |
+|----------|---------|---------|
+| `get_current_time` | "What time is it?" | Returns current date/time |
+| `tell_joke` | "Tell me a joke" | Returns random programmer joke |
+| `lookup_order` | "Order status for 12345?" | Returns mock order info |
+
+```bash
+python 07_function_calling_bot.py
+```
+
+**Test Order IDs:**
+- `12345` - Shipped (with tracking)
+- `67890` - Processing
+- `11111` - Delivered
+- `99999` - Cancelled
+
+**Sample Output:**
+```
+[TURN 1] USER: What time is it?
+============================================================
+[FUNCTION CALL] get_current_time
+[FUNCTION RESULT] 08:45 AM on Tuesday, February 04, 2026
+[LLM] Generating response...
+[ASSISTANT] It's currently 8:45 AM on Tuesday, February 4th, 2026.
+[TTS] Speaking...
+```
+
+**How Function Calling Works:**
+1. User asks a question via voice
+2. Deepgram transcribes the speech
+3. GPT-4o-mini decides if a function is needed
+4. If yes, function executes and returns result
+5. LLM incorporates result into natural response
+6. ElevenLabs speaks the response
+
 ## Pipecat Architecture
 
 ```
@@ -266,6 +306,16 @@ pip install pyaudio
 - [x] Average latency tracking (every 3 turns)
 - [ ] Measured average latency under 1.5 seconds
 - [ ] Compared GPT-4o-mini vs GPT-4o latency
+
+### Project 5: Function Calling
+- [x] get_current_time function implemented
+- [x] tell_joke function implemented
+- [x] lookup_order function implemented (mock data)
+- [x] Functions registered with LLM
+- [ ] Time function works via voice
+- [ ] Joke function works via voice
+- [ ] Order lookup works via voice
+- [ ] General questions work without functions
 
 ## Resources
 
