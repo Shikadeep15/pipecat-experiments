@@ -122,12 +122,18 @@ class LatencyTracker(FrameProcessor):
 
         # STT: Transcription received
         elif isinstance(frame, TranscriptionFrame):
-            if self.current_metrics:
-                self.current_metrics.stt_end_time = now
-                self.user_text = frame.text
-                stt_lat = self.current_metrics.stt_latency()
+            # Create metrics if we don't have them (VAD event might have been missed)
+            if not self.current_metrics:
+                self.current_metrics = LatencyMetrics(vad_end_time=now)
+
+            self.current_metrics.stt_end_time = now
+            self.user_text = frame.text
+            stt_lat = self.current_metrics.stt_latency()
+            if stt_lat is not None and stt_lat > 0:
                 print(f"[STT] Transcription received @ {now:.3f} (STT: {stt_lat*1000:.0f}ms)", flush=True)
-                print(f"[USER] {frame.text}", flush=True)
+            else:
+                print(f"[STT] Transcription received @ {now:.3f}", flush=True)
+            print(f"[USER] {frame.text}", flush=True)
 
         # Interim transcription (for feedback)
         elif isinstance(frame, InterimTranscriptionFrame):
@@ -138,7 +144,10 @@ class LatencyTracker(FrameProcessor):
             if self.current_metrics:
                 self.current_metrics.llm_first_token_time = now
                 llm_lat = self.current_metrics.llm_latency()
-                print(f"[LLM] First token @ {now:.3f} (LLM TTFT: {llm_lat*1000:.0f}ms)", flush=True)
+                if llm_lat is not None:
+                    print(f"[LLM] First token @ {now:.3f} (LLM TTFT: {llm_lat*1000:.0f}ms)", flush=True)
+                else:
+                    print(f"[LLM] First token @ {now:.3f}", flush=True)
 
         # LLM: Response text
         elif isinstance(frame, TextFrame) and frame.text and self.current_metrics:
@@ -159,11 +168,17 @@ class LatencyTracker(FrameProcessor):
                 self.current_metrics.tts_first_audio_time = now
                 tts_lat = self.current_metrics.tts_latency()
                 e2e_lat = self.current_metrics.e2e_latency()
-                print(f"[TTS] First audio @ {now:.3f} (TTS TTFA: {tts_lat*1000:.0f}ms)", flush=True)
-                print(f"\n{'='*60}", flush=True)
-                print(f"[E2E LATENCY] {e2e_lat*1000:.0f}ms total", flush=True)
-                self._print_latency_breakdown()
-                print(f"{'='*60}\n", flush=True)
+
+                if tts_lat is not None:
+                    print(f"[TTS] First audio @ {now:.3f} (TTS TTFA: {tts_lat*1000:.0f}ms)", flush=True)
+                else:
+                    print(f"[TTS] First audio @ {now:.3f}", flush=True)
+
+                if e2e_lat is not None:
+                    print(f"\n{'='*60}", flush=True)
+                    print(f"[E2E LATENCY] {e2e_lat*1000:.0f}ms total", flush=True)
+                    self._print_latency_breakdown()
+                    print(f"{'='*60}\n", flush=True)
 
                 # Store for averaging
                 self.latency_history.append(self.current_metrics)
