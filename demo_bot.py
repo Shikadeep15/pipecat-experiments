@@ -1,38 +1,16 @@
 #!/usr/bin/env python3
 """
-DEMO VOICE BOT
-==============
-IMPORTANT: Use HEADPHONES to prevent echo feedback!
-
-Run: python demo_bot.py
+DEMO VOICE BOT - Use HEADPHONES!
 """
 
-# Silence EVERYTHING before any imports
 import sys
 import os
 import warnings
 import logging
 
-# Nuclear option: silence all warnings and logging
 warnings.filterwarnings("ignore")
 os.environ["LOGURU_LEVEL"] = "CRITICAL"
 logging.disable(logging.CRITICAL)
-
-# Patch warnings.warn
-_orig_warn = warnings.warn
-def _no_warn(*a, **k): pass
-warnings.warn = _no_warn
-
-# Patch print from other modules
-class QuietStderr:
-    def write(self, msg):
-        if "deprecated" in msg.lower() or "warning" in msg.lower() or "debug" in msg.lower() or "failed" in msg.lower():
-            return
-        sys.__stderr__.write(msg)
-    def flush(self):
-        sys.__stderr__.flush()
-
-# Don't redirect stderr yet - we need to see our own output
 
 import ssl
 import certifi
@@ -40,23 +18,19 @@ os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# Now import pipecat (will generate warnings we ignore)
 import asyncio
 import time
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-# Silence loguru specifically
 from loguru import logger
 logger.remove()
-logger.add(lambda msg: None)  # Send all logs to nowhere
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     Frame, TranscriptionFrame, TextFrame,
-    LLMFullResponseStartFrame, TTSAudioRawFrame,
-    UserStartedSpeakingFrame,
+    UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -69,41 +43,63 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
 
-class DemoTracker(FrameProcessor):
-    def __init__(self):
-        super().__init__()
-        self.t0 = None
-        self.t1 = None
-        self.t2 = None
-        self._said = False
+# Global timing
+g_start_time = None
+g_printed_user = False
 
+
+class InputTracker(FrameProcessor):
+    """Track user input - place after STT"""
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        global g_start_time, g_printed_user
         await super().process_frame(frame, direction)
-        now = time.time()
 
         if isinstance(frame, UserStartedSpeakingFrame):
+            g_start_time = None
+            g_printed_user = False
             print("\n🎤 Listening...", flush=True)
-            self.t0 = self.t1 = self.t2 = None
-            self._said = False
 
-        elif isinstance(frame, TranscriptionFrame):
-            self.t0 = now
-            print(f"\n👤 You: {frame.text}", flush=True)
+        elif isinstance(frame, TranscriptionFrame) and frame.text:
+            g_start_time = time.time()
+            if not g_printed_user:
+                print(f"👤 You: {frame.text}", flush=True)
+                g_printed_user = True
 
-        elif isinstance(frame, LLMFullResponseStartFrame):
-            if not self.t1:
-                self.t1 = now
+        await self.push_frame(frame, direction)
 
-        elif isinstance(frame, TextFrame) and frame.text and not self._said:
-            print(f"🤖 Bot: {frame.text}", flush=True)
-            self._said = True
 
-        elif isinstance(frame, TTSAudioRawFrame):
-            if not self.t2 and self.t0:
-                self.t2 = now
-                e2e = (self.t2 - self.t0) * 1000
-                icon = "🟢" if e2e < 800 else "🟡" if e2e < 1200 else "🔴"
-                print(f"{icon} {e2e:.0f}ms", flush=True)
+class OutputTracker(FrameProcessor):
+    """Track bot output - place after TTS"""
+    def __init__(self):
+        super().__init__()
+        self.bot_response = ""
+        self.printed = False
+        self.first_text_time = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        global g_start_time
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self.bot_response = ""
+            self.printed = False
+            self.first_text_time = None
+
+        elif isinstance(frame, TextFrame) and frame.text:
+            if not self.first_text_time:
+                self.first_text_time = time.time()
+            self.bot_response += frame.text
+
+            # Print when we have a reasonable response
+            if not self.printed and len(self.bot_response) > 10:
+                print(f"🤖 Bot: {self.bot_response}", flush=True)
+                self.printed = True
+
+                # Show latency
+                if g_start_time and self.first_text_time:
+                    latency = (self.first_text_time - g_start_time) * 1000
+                    icon = "🟢" if latency < 800 else "🟡" if latency < 1200 else "🔴"
+                    print(f"{icon} Response time: {latency:.0f}ms\n", flush=True)
 
         await self.push_frame(frame, direction)
 
@@ -112,19 +108,28 @@ async def main():
     print("\n" + "="*50)
     print("    🎙️  VOICE AI DEMO  🎙️")
     print("="*50)
-    print()
-    print("⚠️  USE HEADPHONES to prevent echo!")
-    print()
+    print("\n⚠️  USE HEADPHONES to prevent echo!\n")
     print("🟢 <800ms | 🟡 800-1200ms | 🔴 >1200ms")
     print("="*50)
-    print("\nSpeak after you see 🎤. Press Ctrl+C to exit.\n")
+
+    # Check API keys
+    missing = []
+    if not os.getenv("DEEPGRAM_API_KEY"): missing.append("DEEPGRAM_API_KEY")
+    if not os.getenv("OPENAI_API_KEY"): missing.append("OPENAI_API_KEY")
+    if not os.getenv("CARTESIA_API_KEY"): missing.append("CARTESIA_API_KEY")
+
+    if missing:
+        print(f"\n❌ Missing: {', '.join(missing)}")
+        return
+
+    print("\n✅ Starting...\n")
 
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             vad_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.6)),
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.7)),
             vad_audio_passthrough=True,
         )
     )
@@ -144,11 +149,12 @@ async def main():
         voice_id="79a125e8-cd45-4c13-8a67-188112f4dd22",
     )
 
-    tracker = DemoTracker()
+    input_tracker = InputTracker()
+    output_tracker = OutputTracker()
 
     messages = [{
         "role": "system",
-        "content": "You are a helpful voice assistant. Give brief 1-2 sentence responses."
+        "content": "You are a helpful voice assistant. Keep responses brief - 1 to 2 sentences maximum."
     }]
 
     context = OpenAILLMContext(messages)
@@ -157,9 +163,10 @@ async def main():
     pipeline = Pipeline([
         transport.input(),
         stt,
-        tracker,
+        input_tracker,   # Track transcription
         agg.user(),
         llm,
+        output_tracker,  # Track LLM output
         tts,
         transport.output(),
         agg.assistant(),
@@ -167,6 +174,8 @@ async def main():
 
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
     runner = PipelineRunner(handle_sigint=True)
+
+    print("🎤 Ready! Start speaking...\n")
     await runner.run(task)
 
 
@@ -174,4 +183,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n\n👋 Bye!")
+        print("\n\n👋 Demo ended!")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
