@@ -69,6 +69,29 @@ Full conversational voice bot. Demonstrates:
 - Bidirectional audio pipeline
 - Interruption handling
 
+### 04_local_voice_bot.py (Project 2)
+**Local Voice Bot with full verification logging.**
+
+Pipeline: `Microphone → SileroVAD → Deepgram STT → GPT-4o-mini → ElevenLabs TTS → Speaker`
+
+Features:
+- Voice Activity Detection (SileroVAD) for natural turn-taking
+- Interruption handling (speak while bot talks to stop it)
+- Conversation logging with latency metrics
+- System prompt: "You are a helpful assistant. Keep responses under 2 sentences."
+
+```bash
+python 04_local_voice_bot.py
+```
+
+**Verification:**
+- Bot starts and listens
+- Transcription works (logged as `[TURN N] USER: ...`)
+- LLM generates response (logged as `[ASSISTANT] ...`)
+- TTS plays through speakers (logged as `[TTS] Speaking...`)
+- Interruption handling works (logged as `[INTERRUPT]`)
+- Latency displayed (`[LATENCY] Time to first response: X.XXs`)
+
 ## Pipecat Architecture
 
 ```
@@ -141,12 +164,21 @@ pip install pyaudio
 
 ## Verification Checklist
 
-- [x] Pipecat installed successfully
+### Project 1: Install Pipecat
+- [x] Pipecat installed successfully (v0.0.101)
 - [x] All dependencies resolved
-- [x] .env file configured
-- [ ] Can import pipecat without errors (run `python test_imports.py`)
-- [ ] Simple TTS example works
-- [ ] Full voice bot works
+- [x] .env file configured with API keys
+- [x] Can import pipecat without errors (all 8 tests pass)
+
+### Project 2: Local Voice Bot
+- [x] Bot starts and listens
+- [x] Deepgram STT connection works
+- [x] ElevenLabs TTS connection works
+- [x] Pipeline linked correctly
+- [x] VAD (Silero) loaded
+- [x] Interruption handling enabled (`allow_interruptions=True`)
+- [ ] 5-turn conversation completed
+- [ ] Latency under 2 seconds
 
 ## Resources
 
