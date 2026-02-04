@@ -1,0 +1,30 @@
+#!/bin/bash
+# Compare latency between different LLM models
+
+echo "=================================================="
+echo "MODEL COMPARISON: Latency Test"
+echo "=================================================="
+echo ""
+echo "This script helps you compare latency between models."
+echo "Run each command and have a few conversations to measure."
+echo ""
+echo "Test 1: GPT-4o-mini (fastest, recommended)"
+echo "  python3 06_latency_optimized_bot.py --model gpt-4o-mini"
+echo ""
+echo "Test 2: GPT-4o (more capable, slower)"
+echo "  python3 06_latency_optimized_bot.py --model gpt-4o"
+echo ""
+echo "Test 3: GPT-4-turbo"
+echo "  python3 06_latency_optimized_bot.py --model gpt-4-turbo"
+echo ""
+echo "=================================================="
+echo "Expected Results:"
+echo "  GPT-4o-mini: ~800-1200ms E2E"
+echo "  GPT-4o:      ~1200-1800ms E2E"
+echo "  GPT-4-turbo: ~1500-2500ms E2E"
+echo "=================================================="
+echo ""
+echo "Starting GPT-4o-mini test..."
+echo ""
+
+python3 06_latency_optimized_bot.py --model gpt-4o-mini

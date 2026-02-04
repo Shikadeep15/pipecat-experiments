@@ -117,6 +117,52 @@ python 05_smartturn_voice_bot.py
 - Bot should wait for complete thought, not respond at "hmm"
 - Logs show `[SMARTTURN] Analyzing if user finished their thought...`
 
+### 06_latency_optimized_bot.py (Project 4)
+**Latency-optimized voice bot with detailed timing breakdown.**
+
+Tracks every stage of the pipeline:
+- **STT**: Time from VAD silence to transcription
+- **LLM**: Time from transcription to first token (TTFT)
+- **TTS**: Time from first LLM token to first audio byte (TTFA)
+- **E2E**: Total end-to-end latency
+
+```bash
+# Default (GPT-4o-mini - fastest)
+python 06_latency_optimized_bot.py
+
+# Compare with GPT-4o
+python 06_latency_optimized_bot.py --model gpt-4o
+
+# Compare with GPT-4-turbo
+python 06_latency_optimized_bot.py --model gpt-4-turbo
+```
+
+**Sample Output:**
+```
+[VAD] User stopped speaking @ 1234567890.123
+[STT] Transcription received @ 1234567890.456 (STT: 333ms)
+[USER] What's the weather like today?
+[LLM] First token @ 1234567890.789 (LLM TTFT: 333ms)
+[ASSISTANT] I don't have access to weather data, but you can check...
+[TTS] First audio @ 1234567891.012 (TTS TTFA: 223ms)
+
+============================================================
+[E2E LATENCY] 889ms total
+  STT:    333ms ████████████████
+  LLM:    333ms ████████████████ (gpt-4o-mini)
+  TTS:    223ms ███████████
+  Status: 🟢 EXCELLENT (target: <1500ms)
+============================================================
+```
+
+**Latency Targets:**
+| Status | E2E Latency | Description |
+|--------|-------------|-------------|
+| 🟢 EXCELLENT | <1000ms | Feels instant |
+| 🟡 GOOD | 1000-1500ms | Natural conversation |
+| 🟠 ACCEPTABLE | 1500-2000ms | Noticeable but usable |
+| 🔴 NEEDS WORK | >2000ms | Feels slow |
+
 ## Pipecat Architecture
 
 ```
@@ -212,6 +258,14 @@ pip install pyaudio
 - [ ] Bot waits for complete thoughts
 - [ ] Doesn't interrupt during thinking pauses
 - [ ] Feels more natural than VAD alone
+
+### Project 4: Latency Measurement & Optimization
+- [x] Latency logging implemented (STT, LLM, TTS, E2E)
+- [x] Visual breakdown with bar chart
+- [x] Model comparison support (--model flag)
+- [x] Average latency tracking (every 3 turns)
+- [ ] Measured average latency under 1.5 seconds
+- [ ] Compared GPT-4o-mini vs GPT-4o latency
 
 ## Resources
 
