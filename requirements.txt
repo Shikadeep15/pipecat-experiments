@@ -1,0 +1,12 @@
+# Pipecat - Voice AI Framework
+pipecat-ai[daily,openai,deepgram,elevenlabs,cartesia,silero]
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Audio handling
+pyaudio>=0.2.14
+
+# Async support
+aiohttp>=3.9.0
+websockets>=12.0
