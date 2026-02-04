@@ -13,9 +13,20 @@ Run: python 06_latency_optimized_bot.py [--model gpt-4o-mini] [--tts cartesia]
 """
 
 import warnings
-# Suppress ALL deprecation warnings
+import sys
+
+# Aggressively suppress ALL deprecation warnings before any imports
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", message=".*deprecated.*")
+warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
+warnings.filterwarnings("ignore", message=".*deprecated.*", category=Warning)
+
+# Monkey-patch warnings.warn to suppress deprecation warnings from pipecat internals
+_original_warn = warnings.warn
+def _filtered_warn(message, category=UserWarning, stacklevel=1):
+    if category == DeprecationWarning or "deprecated" in str(message).lower():
+        return
+    _original_warn(message, category, stacklevel)
+warnings.warn = _filtered_warn
 
 import argparse
 import asyncio
