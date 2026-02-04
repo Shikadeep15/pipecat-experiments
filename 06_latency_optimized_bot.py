@@ -4,19 +4,18 @@ Project 4: Latency-Optimized Voice Bot
 Voice bot with detailed latency tracking and optimization.
 
 Tracks:
-- VAD: When user stops speaking
 - STT: Time to get transcription
-- LLM: Time to first token
-- TTS: Time to first audio byte
+- LLM: Time to first token (TTFT)
+- TTS: Time to first audio byte (TTFA)
 - E2E: Total end-to-end latency
 
-Pipeline: Mic → VAD → Deepgram STT → GPT-4o-mini → ElevenLabs TTS → Speaker
-
-Run: python 06_latency_optimized_bot.py [--model gpt-4o]
+Run: python 06_latency_optimized_bot.py [--model gpt-4o-mini] [--tts cartesia]
 """
 
 import warnings
+# Suppress ALL deprecation warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*deprecated.*")
 
 import argparse
 import asyncio
@@ -26,13 +25,16 @@ import time
 import ssl
 import certifi
 from collections import deque
-from dataclasses import dataclass, field
 from typing import Optional
 
 # Fix SSL certificates on macOS
 os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 ssl._create_default_https_context = ssl._create_unverified_context
+
+# Suppress warnings from imports too
+import logging
+logging.getLogger("pipecat").setLevel(logging.ERROR)
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -59,47 +61,36 @@ from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
 load_dotenv(override=True)
 
-# Configure logging
+# Configure logging - only errors
 logger.remove(0)
-logger.add(sys.stderr, level="WARNING")
+logger.add(sys.stderr, level="ERROR")
 
 
-# Shared state for latency tracking across processors
 class LatencyState:
-    """Shared state for tracking latencies across multiple processors."""
-    def __init__(self, model_name: str = "gpt-4o-mini"):
+    """Shared state for tracking latencies."""
+    def __init__(self, model_name: str, tts_name: str):
         self.model_name = model_name
+        self.tts_name = tts_name
         self.turn_count = 0
         self.latency_history = deque(maxlen=20)
+        self.reset_turn()
 
-        # Current turn timestamps
-        self.vad_end_time: Optional[float] = None
-        self.stt_end_time: Optional[float] = None
+    def reset_turn(self):
+        # Use transcription time as the anchor point (most reliable)
+        self.transcription_time: Optional[float] = None
         self.llm_first_token_time: Optional[float] = None
         self.tts_first_audio_time: Optional[float] = None
         self.user_text: str = ""
 
-    def reset_turn(self):
-        """Reset for a new turn."""
-        self.vad_end_time = None
-        self.stt_end_time = None
-        self.llm_first_token_time = None
-        self.tts_first_audio_time = None
-        self.user_text = ""
-
-    def stt_latency(self) -> Optional[float]:
-        if self.vad_end_time and self.stt_end_time:
-            return self.stt_end_time - self.vad_end_time
-        return None
-
     def llm_latency(self) -> Optional[float]:
-        if self.stt_end_time and self.llm_first_token_time:
-            return self.llm_first_token_time - self.stt_end_time
+        if self.transcription_time and self.llm_first_token_time:
+            return self.llm_first_token_time - self.transcription_time
         return None
 
     def tts_latency(self) -> Optional[float]:
@@ -108,14 +99,12 @@ class LatencyState:
         return None
 
     def e2e_latency(self) -> Optional[float]:
-        if self.vad_end_time and self.tts_first_audio_time:
-            return self.tts_first_audio_time - self.vad_end_time
+        if self.transcription_time and self.tts_first_audio_time:
+            return self.tts_first_audio_time - self.transcription_time
         return None
 
     def save_turn(self):
-        """Save current turn metrics to history."""
         self.latency_history.append({
-            'stt': self.stt_latency(),
             'llm': self.llm_latency(),
             'tts': self.tts_latency(),
             'e2e': self.e2e_latency(),
@@ -123,189 +112,131 @@ class LatencyState:
         self.turn_count += 1
 
 
-class InputLatencyTracker(FrameProcessor):
-    """Tracks input latencies (VAD, STT). Place after STT in pipeline."""
-
+class InputTracker(FrameProcessor):
+    """Tracks input events. Place after STT."""
     def __init__(self, state: LatencyState):
         super().__init__()
         self.state = state
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        now = time.time()
 
-        # VAD: User started speaking
         if isinstance(frame, UserStartedSpeakingFrame):
-            print(f"\n[VAD] User speaking...", flush=True)
+            print(f"\n[MIC] Listening...", flush=True)
 
-        # VAD: User stopped speaking
-        elif isinstance(frame, UserStoppedSpeakingFrame):
-            self.state.reset_turn()
-            self.state.vad_end_time = now
-            print(f"[VAD] User stopped @ {now:.3f}", flush=True)
-
-        # STT: Transcription received
         elif isinstance(frame, TranscriptionFrame):
-            self.state.stt_end_time = now
+            self.state.reset_turn()
+            self.state.transcription_time = time.time()
             self.state.user_text = frame.text
-            stt_lat = self.state.stt_latency()
+            print(f"\n{'='*55}", flush=True)
+            print(f"[YOU] {frame.text}", flush=True)
+            print(f"{'='*55}", flush=True)
 
-            lat_str = f" (STT: {stt_lat*1000:.0f}ms)" if stt_lat else ""
-            print(f"[STT] Transcription{lat_str}", flush=True)
-            print(f"[USER] {frame.text}", flush=True)
-
-        # Interim transcription
         elif isinstance(frame, InterimTranscriptionFrame):
-            text = frame.text[:60] if frame.text else ""
-            print(f"\r[...] {text}", end="", flush=True)
+            if frame.text:
+                print(f"\r[...] {frame.text[:50]:<50}", end="", flush=True)
 
         await self.push_frame(frame, direction)
 
 
-class OutputLatencyTracker(FrameProcessor):
-    """Tracks output latencies (LLM, TTS). Place after TTS in pipeline."""
-
+class OutputTracker(FrameProcessor):
+    """Tracks output events. Place after TTS."""
     def __init__(self, state: LatencyState):
         super().__init__()
         self.state = state
-        self._response_logged = False
+        self._logged = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        now = time.time()
 
-        # LLM: First token
         if isinstance(frame, LLMFullResponseStartFrame):
-            if self.state.llm_first_token_time is None:
-                self.state.llm_first_token_time = now
+            if self.state.llm_first_token_time is None and self.state.transcription_time:
+                self.state.llm_first_token_time = time.time()
                 llm_lat = self.state.llm_latency()
-                lat_str = f" (LLM TTFT: {llm_lat*1000:.0f}ms)" if llm_lat else ""
-                print(f"[LLM] First token{lat_str}", flush=True)
+                if llm_lat:
+                    print(f"[LLM] {llm_lat*1000:.0f}ms to first token", flush=True)
 
-        # LLM: Response text
         elif isinstance(frame, TextFrame) and frame.text:
-            if not self._response_logged:
-                print(f"[ASSISTANT] {frame.text}", flush=True)
-                self._response_logged = True
+            if not self._logged:
+                print(f"[BOT] {frame.text}", flush=True)
+                self._logged = True
 
-        # LLM: Finished
         elif isinstance(frame, LLMFullResponseEndFrame):
-            self._response_logged = False
+            self._logged = False
 
-        # TTS: First audio byte
         elif isinstance(frame, TTSAudioRawFrame):
-            if self.state.tts_first_audio_time is None:
-                self.state.tts_first_audio_time = now
-                tts_lat = self.state.tts_latency()
-                e2e_lat = self.state.e2e_latency()
+            if self.state.tts_first_audio_time is None and self.state.llm_first_token_time:
+                self.state.tts_first_audio_time = time.time()
+                self._print_latency()
+                self.state.save_turn()
 
-                lat_str = f" (TTS TTFA: {tts_lat*1000:.0f}ms)" if tts_lat else ""
-                print(f"[TTS] First audio{lat_str}", flush=True)
-
-                if e2e_lat:
-                    self._print_latency_breakdown(e2e_lat)
-                    self.state.save_turn()
-
-        # TTS: Finished
         elif isinstance(frame, TTSStoppedFrame):
             if self.state.turn_count > 0 and self.state.turn_count % 3 == 0:
                 self._print_averages()
 
         await self.push_frame(frame, direction)
 
-    def _print_latency_breakdown(self, e2e: float):
-        """Print visual latency breakdown."""
-        stt = self.state.stt_latency() or 0
+    def _print_latency(self):
         llm = self.state.llm_latency() or 0
         tts = self.state.tts_latency() or 0
+        e2e = self.state.e2e_latency() or 0
 
-        print(f"\n{'='*60}", flush=True)
-        print(f"[E2E LATENCY] {e2e*1000:.0f}ms total", flush=True)
-
-        # Visual bar chart
-        max_lat = max(stt, llm, tts, 0.001)
-        scale = 40
-
-        def bar(val):
-            width = int((val / max_lat) * scale) if max_lat > 0 else 0
-            return "█" * width
-
-        print(f"  STT:  {stt*1000:6.0f}ms {bar(stt)}", flush=True)
-        print(f"  LLM:  {llm*1000:6.0f}ms {bar(llm)} ({self.state.model_name})", flush=True)
-        print(f"  TTS:  {tts*1000:6.0f}ms {bar(tts)}", flush=True)
-
-        # Status indicator
+        # Status
         if e2e < 1.0:
-            status = "🟢 EXCELLENT"
+            status = "🟢"
         elif e2e < 1.5:
-            status = "🟡 GOOD"
+            status = "🟡"
         elif e2e < 2.0:
-            status = "🟠 ACCEPTABLE"
+            status = "🟠"
         else:
-            status = "🔴 NEEDS OPTIMIZATION"
-        print(f"  Status: {status} (target: <1500ms)", flush=True)
-        print(f"{'='*60}\n", flush=True)
+            status = "🔴"
+
+        print(f"\n[LATENCY] {status} E2E: {e2e*1000:.0f}ms (LLM: {llm*1000:.0f}ms + TTS: {tts*1000:.0f}ms)", flush=True)
+
+        # Bar chart
+        max_lat = max(llm, tts, 0.1)
+        def bar(v): return "█" * int((v / max_lat) * 25)
+        print(f"  LLM ({self.state.model_name}): {llm*1000:4.0f}ms {bar(llm)}", flush=True)
+        print(f"  TTS ({self.state.tts_name}):  {tts*1000:4.0f}ms {bar(tts)}", flush=True)
 
     def _print_averages(self):
-        """Print average latencies over recent turns."""
-        history = self.state.latency_history
-        if len(history) < 2:
+        h = self.state.latency_history
+        if len(h) < 2:
             return
-
-        def avg(key):
-            vals = [h[key] for h in history if h[key] is not None]
-            return sum(vals) / len(vals) if vals else 0
-
-        print(f"\n{'─'*60}", flush=True)
-        print(f"[AVERAGE] Over {len(history)} turns:", flush=True)
-        print(f"  STT: {avg('stt')*1000:.0f}ms | LLM: {avg('llm')*1000:.0f}ms | TTS: {avg('tts')*1000:.0f}ms", flush=True)
-        print(f"  E2E Average: {avg('e2e')*1000:.0f}ms", flush=True)
-        print(f"{'─'*60}\n", flush=True)
+        def avg(k):
+            v = [x[k] for x in h if x[k]]
+            return sum(v)/len(v) if v else 0
+        print(f"\n[AVG over {len(h)} turns] E2E: {avg('e2e')*1000:.0f}ms | LLM: {avg('llm')*1000:.0f}ms | TTS: {avg('tts')*1000:.0f}ms", flush=True)
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Latency-optimized voice bot")
-    parser.add_argument("--model", default="gpt-4o-mini",
-                        choices=["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"],
-                        help="OpenAI model to use")
-    parser.add_argument("--voice", default="JBFqnCBsd6RMkjVDRZzb",
-                        help="ElevenLabs voice ID")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="gpt-4o-mini", choices=["gpt-4o-mini", "gpt-4o"])
+    parser.add_argument("--tts", default="elevenlabs", choices=["elevenlabs", "cartesia"])
     args = parser.parse_args()
 
-    print("\n" + "=" * 70, flush=True)
-    print("PROJECT 4: LATENCY-OPTIMIZED VOICE BOT", flush=True)
-    print("=" * 70, flush=True)
-    print(f"Model: {args.model}", flush=True)
-    print(f"Target E2E Latency: <1500ms", flush=True)
-    print("=" * 70, flush=True)
-    print(flush=True)
-    print("Latency Breakdown:", flush=True)
-    print("  STT  = Time from silence to transcription", flush=True)
-    print("  LLM  = Time from transcription to first LLM token (TTFT)", flush=True)
-    print("  TTS  = Time from LLM token to first audio byte (TTFA)", flush=True)
-    print("  E2E  = Total time from silence to hearing response", flush=True)
-    print("=" * 70 + "\n", flush=True)
+    print("\n" + "=" * 55, flush=True)
+    print("LATENCY TEST BOT", flush=True)
+    print(f"LLM: {args.model} | TTS: {args.tts}", flush=True)
+    print("=" * 55, flush=True)
+    print("Target: <1000ms 🟢 | <1500ms 🟡 | <2000ms 🟠 | >2000ms 🔴", flush=True)
+    print("=" * 55 + "\n", flush=True)
 
-    # Shared latency state
-    latency_state = LatencyState(model_name=args.model)
+    # Shared state
+    state = LatencyState(args.model, args.tts)
 
-    # Configure local audio with optimized VAD
+    # Transport
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             vad_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(
-                params=VADParams(
-                    stop_secs=0.5,
-                    min_volume=0.6,
-                )
-            ),
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.4)),
             vad_audio_passthrough=True,
         )
     )
 
-    # Deepgram STT
+    # STT
     stt = DeepgramSTTService(
         api_key=os.getenv("DEEPGRAM_API_KEY"),
         model="nova-2",
@@ -317,61 +248,46 @@ async def main():
         model=args.model,
     )
 
-    # ElevenLabs TTS
-    tts = ElevenLabsTTSService(
-        api_key=os.getenv("ELEVENLABS_API_KEY"),
-        voice_id=args.voice,
-        model="eleven_turbo_v2",
-        optimize_streaming_latency=3,
-    )
+    # TTS - choose based on argument
+    if args.tts == "cartesia":
+        tts = CartesiaTTSService(
+            api_key=os.getenv("CARTESIA_API_KEY"),
+            voice_id="79a125e8-cd45-4c13-8a67-188112f4dd22",  # British Lady
+        )
+    else:
+        tts = ElevenLabsTTSService(
+            api_key=os.getenv("ELEVENLABS_API_KEY"),
+            voice_id="JBFqnCBsd6RMkjVDRZzb",
+            model="eleven_turbo_v2",
+            optimize_streaming_latency=4,  # Max optimization
+        )
 
-    # Latency trackers
-    input_tracker = InputLatencyTracker(latency_state)
-    output_tracker = OutputLatencyTracker(latency_state)
+    # Trackers
+    input_tracker = InputTracker(state)
+    output_tracker = OutputTracker(state)
 
-    # System prompt
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a helpful assistant. Keep responses under 2 sentences. Be concise.",
-        },
-    ]
-
+    # Context
+    messages = [{"role": "system", "content": "You are helpful. Keep responses under 2 sentences."}]
     context = OpenAILLMContext(messages)
     context_aggregator = llm.create_context_aggregator(context)
 
-    # Build pipeline with trackers in correct positions
-    # Input tracker AFTER stt to see TranscriptionFrame
-    # Output tracker AFTER tts to see TTSAudioRawFrame
-    pipeline = Pipeline(
-        [
-            transport.input(),
-            stt,
-            input_tracker,              # Tracks VAD and STT
-            context_aggregator.user(),
-            llm,
-            tts,
-            output_tracker,             # Tracks LLM and TTS
-            transport.output(),
-            context_aggregator.assistant(),
-        ]
-    )
+    # Pipeline
+    pipeline = Pipeline([
+        transport.input(),
+        stt,
+        input_tracker,
+        context_aggregator.user(),
+        llm,
+        tts,
+        output_tracker,
+        transport.output(),
+        context_aggregator.assistant(),
+    ])
 
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            allow_interruptions=True,
-            enable_metrics=True,
-            enable_usage_metrics=True,
-        ),
-    )
+    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
+    runner = PipelineRunner(handle_sigint=True)
 
-    runner = PipelineRunner(handle_sigint=False if sys.platform == "win32" else True)
-
-    print("Bot initialized! Speak to test latency.", flush=True)
-    print("Average latencies shown every 3 turns.", flush=True)
-    print("Press Ctrl+C to exit.\n", flush=True)
-
+    print("Speak now! Press Ctrl+C to exit.\n", flush=True)
     await runner.run(task)
 
 
@@ -379,7 +295,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nExiting...", flush=True)
+        print("\nBye!", flush=True)
     except Exception as e:
         print(f"Error: {e}", flush=True)
         import traceback
