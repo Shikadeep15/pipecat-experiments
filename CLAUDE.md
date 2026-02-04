@@ -92,6 +92,31 @@ python 04_local_voice_bot.py
 - Interruption handling works (logged as `[INTERRUPT]`)
 - Latency displayed (`[LATENCY] Time to first response: X.XXs`)
 
+### 05_smartturn_voice_bot.py (Project 3)
+**Voice Bot with SmartTurn for intelligent turn detection.**
+
+Pipeline: `Mic → VAD → SmartTurn → Deepgram STT → GPT-4o-mini → ElevenLabs TTS → Speaker`
+
+SmartTurn uses AI to detect when you've actually finished speaking, not just
+when you pause. This prevents the bot from interrupting during:
+- Thinking pauses ("I want to order... hmm... maybe a pizza")
+- Natural speech hesitations
+- Mid-sentence breaths
+
+```bash
+python 05_smartturn_voice_bot.py
+```
+
+**Key Configuration:**
+- VAD `stop_secs=0.2` (short, so SmartTurn can take over)
+- SmartTurn analyzes ~65ms of audio to determine if user is done
+- Works best with 16kHz mono PCM audio (up to 8 seconds)
+
+**Verification:**
+- Test with: "I want to order... hmm... maybe a pizza"
+- Bot should wait for complete thought, not respond at "hmm"
+- Logs show `[SMARTTURN] Analyzing if user finished their thought...`
+
 ## Pipecat Architecture
 
 ```
@@ -179,6 +204,14 @@ pip install pyaudio
 - [x] Interruption handling enabled (`allow_interruptions=True`)
 - [ ] 5-turn conversation completed
 - [ ] Latency under 2 seconds
+
+### Project 3: SmartTurn Integration
+- [x] SmartTurn model loaded successfully
+- [x] Integrated with VAD (stop_secs=0.2)
+- [x] Pipeline configured correctly
+- [ ] Bot waits for complete thoughts
+- [ ] Doesn't interrupt during thinking pauses
+- [ ] Feels more natural than VAD alone
 
 ## Resources
 
