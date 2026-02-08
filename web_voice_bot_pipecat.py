@@ -66,14 +66,15 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-# ============ Voice Options ============
+# ============ Voice Options (Free Tier Compatible) ============
 VOICES = {
-    'neha': {'id': 'QTKSa2Iyv0yoxvXY2V8a', 'name': 'Neha (Indian Female)', 'description': 'Slightly imperfect, hugely relatable - Customer care agent'},
-    'riya': {'id': 'Zs2gGSc3xT4kRfIqS9R3', 'name': 'Riya (Indian Female)', 'description': 'Warm, friendly Indian English'},
-    'george': {'id': 'JBFqnCBsd6RMkjVDRZzb', 'name': 'George (US Male)', 'description': 'Deep, authoritative'},
-    'jessica': {'id': 'cgSgspJ2msm6clMCkdW9', 'name': 'Jessica (US Female)', 'description': 'Clear, professional'},
-    'charlie': {'id': 'IKne3meq5aSn9XLyUdCD', 'name': 'Charlie (Energetic)', 'description': 'Upbeat, enthusiastic'},
-    'sarah': {'id': 'EXAVITQu4vr4xnSDxMaL', 'name': 'Sarah (Confident)', 'description': 'Confident, warm'},
+    'rachel': {'id': '21m00Tcm4TlvDq8ikWAM', 'name': 'Rachel (US Female)', 'description': 'Calm, professional'},
+    'bella': {'id': 'EXAVITQu4vr4xnSDxMaL', 'name': 'Bella (US Female)', 'description': 'Soft, friendly'},
+    'elli': {'id': 'MF3mGyEYCl7XYWbV9V6O', 'name': 'Elli (US Female)', 'description': 'Young, cheerful'},
+    'josh': {'id': 'TxGEqnHWrfWFTfGW9XjX', 'name': 'Josh (US Male)', 'description': 'Deep, narrative'},
+    'adam': {'id': 'pNInz6obpgDQGcFmaJgB', 'name': 'Adam (US Male)', 'description': 'Deep, authoritative'},
+    'sam': {'id': 'yoZ06aMxZJJ28mfd3POQ', 'name': 'Sam (US Male)', 'description': 'Raspy, authentic'},
+    'domi': {'id': 'AZnzlk1XvdvUeBnXmlld', 'name': 'Domi (US Female)', 'description': 'Strong, expressive'},
 }
 
 
@@ -508,7 +509,7 @@ class VoiceBotSession:
         self.audio_queue = Queue()
         self.ws = None
         self.running = False
-        self.voice_id = VOICES['neha']['id']
+        self.voice_id = VOICES['rachel']['id']  # Default to Rachel (works on free tier)
 
         # SmartTurn detector
         self.smart_turn = SmartTurnDetector()
@@ -740,40 +741,110 @@ def get_config():
     })
 
 
-# ============ Plivo Webhooks ============
+# ============ Plivo Phone Conversations ============
+# Store conversation history per call
+plivo_conversations = {}
+
+
+def get_plivo_listen_xml(call_uuid: str, prompt: str = None):
+    """Generate XML to listen for speech input"""
+    ngrok_url = os.getenv('NGROK_URL', request.url_root.rstrip('/'))
+
+    speak_element = ""
+    if prompt:
+        speak_element = f'<Speak voice="Polly.Aditi">{prompt}</Speak>'
+
+    return f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    {speak_element}
+    <GetInput action="{ngrok_url}/plivo/input/{call_uuid}" method="POST"
+              inputType="speech" executionTimeout="30" speechEndTimeout="2"
+              speechModel="default" language="en-US">
+        <Speak voice="Polly.Aditi">I'm listening...</Speak>
+    </GetInput>
+    <Speak voice="Polly.Aditi">I didn't hear anything. Goodbye!</Speak>
+    <Hangup/>
+</Response>'''
+
+
 @app.route('/plivo/answer', methods=['GET', 'POST'])
 def plivo_answer():
-    """Handle incoming Plivo call"""
+    """Handle incoming Plivo call - greet and start listening"""
     call_uuid = request.values.get('CallUUID', 'unknown')
     from_number = request.values.get('From', 'unknown')
 
     log(f"[PLIVO] Incoming call from {from_number} (UUID: {call_uuid[:8]})")
 
-    # Create session for this call
-    session = PlivoCallSession(call_uuid)
-    plivo_sessions[call_uuid] = session
+    # Initialize conversation for this call
+    plivo_conversations[call_uuid] = [
+        {
+            "role": "system",
+            "content": """You are a friendly and helpful voice assistant on a phone call.
+Keep your responses very concise - 1 sentence maximum since this is a phone call.
+Be warm and conversational. You have access to these functions:
+- get_current_time: Use when asked about the time or date
+- tell_joke: Use when asked for a joke
+- lookup_order: Use when asked about order status (test IDs: 12345, 67890, 11111, 99999)"""
+        }
+    ]
 
-    # Return Plivo XML to stream audio
-    # Using Plivo's stream feature to get real-time audio
-    xml_response = f'''<?xml version="1.0" encoding="UTF-8"?>
+    # Return greeting and start listening
+    xml = get_plivo_listen_xml(call_uuid, "Hello! I'm your voice assistant. How can I help you today?")
+    return Response(xml, mimetype='application/xml')
+
+
+@app.route('/plivo/input/<call_uuid>', methods=['GET', 'POST'])
+def plivo_input(call_uuid):
+    """Handle speech input from Plivo and respond"""
+    speech = request.values.get('Speech', '')
+
+    if not speech:
+        log(f"[PLIVO] No speech detected for {call_uuid[:8]}")
+        xml = get_plivo_listen_xml(call_uuid, "I didn't catch that. Could you repeat?")
+        return Response(xml, mimetype='application/xml')
+
+    log(f"[PLIVO] User said: {speech}")
+
+    # Get or create conversation history
+    if call_uuid not in plivo_conversations:
+        plivo_conversations[call_uuid] = [
+            {"role": "system", "content": "You are a helpful voice assistant. Keep responses to 1 sentence."}
+        ]
+
+    # Generate LLM response
+    response_text, llm_time, function_called = generate_llm_response(
+        speech, plivo_conversations[call_uuid], emit_func=None
+    )
+
+    log(f"[PLIVO] Bot response ({llm_time:.0f}ms): {response_text}")
+
+    # Check for goodbye
+    goodbye_phrases = ['bye', 'goodbye', 'hangup', 'end call', 'disconnect']
+    if any(phrase in speech.lower() for phrase in goodbye_phrases):
+        xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak voice="Polly.Aditi">Hello! I'm Neha, your voice assistant. How can I help you today?</Speak>
-    <Stream bidirectional="true" keepCallAlive="true"
-           streamTimeout="3600"
-           contentType="audio/x-mulaw;rate=8000">
-        wss://{request.host}/plivo/stream/{call_uuid}
-    </Stream>
+    <Speak voice="Polly.Aditi">{response_text} Goodbye!</Speak>
+    <Hangup/>
 </Response>'''
+        # Cleanup
+        if call_uuid in plivo_conversations:
+            del plivo_conversations[call_uuid]
+        return Response(xml, mimetype='application/xml')
 
-    return Response(xml_response, mimetype='application/xml')
+    # Continue conversation - speak response and listen again
+    xml = get_plivo_listen_xml(call_uuid, response_text)
+    return Response(xml, mimetype='application/xml')
 
 
 @app.route('/plivo/hangup', methods=['GET', 'POST'])
 def plivo_hangup():
-    """Handle Plivo call hangup"""
+    """Handle Plivo call hangup - cleanup"""
     call_uuid = request.values.get('CallUUID', 'unknown')
     log(f"[PLIVO] Call ended: {call_uuid[:8]}")
 
+    # Cleanup conversation history
+    if call_uuid in plivo_conversations:
+        del plivo_conversations[call_uuid]
     if call_uuid in plivo_sessions:
         plivo_sessions[call_uuid].stop()
         del plivo_sessions[call_uuid]
@@ -842,6 +913,82 @@ def handle_stop_conversation():
         active_sessions[sid].stop()
         del active_sessions[sid]
     emit('conversation_stopped', {'status': 'Stopped'})
+
+
+@socketio.on('text_message')
+def handle_text_message(data):
+    """Handle text input (no voice, just text)"""
+    sid = request.sid
+    text = data.get('text', '').strip()
+    voice_key = data.get('voice', 'rachel')
+
+    if not text:
+        return
+
+    log(f"[TEXT] {sid[:8]}: {text}")
+
+    # Get voice ID
+    voice_id = VOICES.get(voice_key, VOICES['rachel'])['id']
+
+    # Create temporary conversation history if no session
+    if sid not in active_sessions:
+        conversation_history = [
+            {
+                "role": "system",
+                "content": """You are a friendly and helpful voice assistant with access to tools.
+
+You have access to these functions:
+- get_current_time: Use when asked about the time or date
+- tell_joke: Use when asked for a joke or something funny
+- lookup_order: Use when asked about order status (test IDs: 12345, 67890, 11111, 99999)
+
+Keep your responses concise - 1-2 sentences maximum for natural conversation.
+Be warm and conversational, like talking to a friend.
+When reporting function results, speak them naturally as if you're having a conversation."""
+            }
+        ]
+    else:
+        conversation_history = active_sessions[sid].conversation_history
+
+    # Emit thinking status
+    emit('bot_thinking', {'status': 'thinking'})
+
+    # Process through LLM
+    def emit_func(event, data):
+        socketio.emit(event, data, to=sid)
+
+    e2e_start = time.time()
+    response_text, llm_time, function_called = generate_llm_response(
+        text, conversation_history, emit_func=emit_func
+    )
+
+    # Generate TTS
+    audio_data, ttfa, tts_time = generate_tts(response_text, voice_id)
+
+    e2e_time = (time.time() - e2e_start) * 1000
+    status = 'excellent' if e2e_time < 1000 else 'good' if e2e_time < 1500 else 'acceptable' if e2e_time < 2000 else 'slow'
+
+    log(f"[TEXT] Response ({e2e_time:.0f}ms): {response_text[:50]}...")
+
+    if audio_data:
+        emit('bot_response', {
+            'text': response_text,
+            'audio': base64.b64encode(audio_data).decode('utf-8'),
+            'function_called': function_called,
+            'latency': {
+                'llm_ms': round(llm_time),
+                'tts_ttfa_ms': round(ttfa),
+                'tts_total_ms': round(tts_time),
+                'e2e_ms': round(e2e_time),
+                'status': status
+            }
+        })
+    else:
+        emit('bot_response', {
+            'text': response_text,
+            'audio': None,
+            'error': 'TTS generation failed'
+        })
 
 
 # ============ Main ============
