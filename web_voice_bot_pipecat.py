@@ -68,7 +68,8 @@ def log(msg):
 
 # ============ Voice Options ============
 VOICES = {
-    'neha': {'id': 'Zs2gGSc3xT4kRfIqS9R3', 'name': 'Neha (Indian Female)', 'description': 'Warm, friendly Indian English'},
+    'neha': {'id': 'QTKSa2Iyv0yoxvXY2V8a', 'name': 'Neha (Indian Female)', 'description': 'Slightly imperfect, hugely relatable - Customer care agent'},
+    'riya': {'id': 'Zs2gGSc3xT4kRfIqS9R3', 'name': 'Riya (Indian Female)', 'description': 'Warm, friendly Indian English'},
     'george': {'id': 'JBFqnCBsd6RMkjVDRZzb', 'name': 'George (US Male)', 'description': 'Deep, authoritative'},
     'jessica': {'id': 'cgSgspJ2msm6clMCkdW9', 'name': 'Jessica (US Female)', 'description': 'Clear, professional'},
     'charlie': {'id': 'IKne3meq5aSn9XLyUdCD', 'name': 'Charlie (Energetic)', 'description': 'Upbeat, enthusiastic'},
