@@ -21,17 +21,14 @@ pip install -r requirements.txt
 # On macOS, also install portaudio for PyAudio
 brew install portaudio
 
-# Test imports
-python test_imports.py
+# RECOMMENDED: Run Web UI Voice Bot (no headphones needed!)
+python web_voice_bot.py
+# Open http://localhost:5002
 
-# Run simple TTS example
-python 01_simple_tts.py
-
-# Run ElevenLabs TTS example
-python 02_elevenlabs_tts.py
-
-# Run full voice bot (STT + LLM + TTS)
-python 03_voice_bot.py
+# Alternative: Run command-line voice bots (headphones required)
+python demo_bot.py            # Simple demo
+python 04_local_voice_bot.py  # With logging
+python 05_smartturn_voice_bot.py  # With SmartTurn
 ```
 
 ## Environment Variables
@@ -162,6 +159,44 @@ python 06_latency_optimized_bot.py --model gpt-4-turbo
 | 🟡 GOOD | 1000-1500ms | Natural conversation |
 | 🟠 ACCEPTABLE | 1500-2000ms | Noticeable but usable |
 | 🔴 NEEDS WORK | >2000ms | Feels slow |
+
+### web_voice_bot.py (Web UI - Recommended)
+**Web-based Voice Bot with WebRTC Echo Cancellation + SmartTurn**
+
+This is the **recommended way** to run the voice bot - no headphones needed!
+
+```bash
+python web_voice_bot.py
+# Open http://localhost:5002
+```
+
+**Why Web UI is Better:**
+- **WebRTC Echo Cancellation**: Browser's built-in echo cancellation filters out the bot's voice
+- **No Headphones Required**: The bot won't hear itself, preventing feedback loops
+- **Visual Interface**: See transcriptions, responses, and latency metrics in real-time
+- **Voice Selection**: Choose from multiple ElevenLabs voices (Neha, George, Jessica, etc.)
+
+**Pipeline:**
+```
+Browser Mic (WebRTC) → Deepgram STT → GPT-4o-mini → ElevenLabs TTS → Browser Audio
+```
+
+**Key Features:**
+- Browser WebRTC audio capture with `echoCancellation: true`
+- Noise suppression and auto gain control
+- Real-time transcription display (interim + final)
+- SmartTurn-like behavior using Deepgram's `speech_final` flag
+- Latency breakdown (LLM, TTS TTFA, TTS Total, E2E)
+- Multiple voice options
+
+**Voice Options:**
+| Voice | Description |
+|-------|-------------|
+| Neha | Warm, friendly Indian English (default) |
+| George | Deep, authoritative US male |
+| Jessica | Clear, professional US female |
+| Charlie | Upbeat, enthusiastic |
+| Sarah | Confident, warm |
 
 ### 07_function_calling_bot.py (Project 5)
 **Voice bot with function calling / tool use.**
@@ -316,6 +351,19 @@ pip install pyaudio
 - [ ] Joke function works via voice
 - [ ] Order lookup works via voice
 - [ ] General questions work without functions
+
+### Web Voice Bot (Recommended)
+- [x] Flask server with WebSocket (Socket.IO)
+- [x] Browser WebRTC audio capture with echo cancellation
+- [x] Deepgram STT integration
+- [x] OpenAI GPT-4o-mini LLM
+- [x] ElevenLabs TTS (streaming)
+- [x] Multiple voice selection
+- [x] Real-time latency tracking
+- [x] SmartTurn-like turn detection (speech_final)
+- [ ] Full conversation tested without echo
+- [ ] Voice selection working
+- [ ] Latency under 2 seconds
 
 ## Resources
 
