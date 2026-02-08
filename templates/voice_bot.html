@@ -449,6 +449,7 @@
                 <strong>WebRTC Echo Cancellation:</strong> Your browser's built-in echo cancellation filters out the bot's voice, so you don't need headphones!<br><br>
                 <strong>SmartTurn (Pipecat-style):</strong> The bot uses intelligent turn detection that analyzes your speech patterns. It waits for complete thoughts, not just silence pauses. Try saying "I want to order... hmm... maybe a pizza" - it will wait for you to finish!<br><br>
                 <strong>Pipeline:</strong> Your voice -> Deepgram STT -> SmartTurn -> GPT-4o-mini -> ElevenLabs (Neha) -> Audio<br><br>
+                <strong>Function Calling:</strong> Try asking "What time is it?", "Tell me a joke", or "What's the status of order 12345?"<br><br>
                 <strong>Plivo Phone:</strong> This bot can also receive phone calls via Plivo. Configure your Plivo webhook to point to <code>/plivo/answer</code>
             </div>
         </div>
@@ -520,6 +521,16 @@
                     currentInterimElement = null;
                 }
                 addMessage('user', data.text, true);  // true = SmartTurn detected
+            });
+
+            socket.on('function_call', (data) => {
+                console.log('Function called:', data.function, data.arguments);
+                addFunctionMessage('call', data.function, data.arguments);
+            });
+
+            socket.on('function_result', (data) => {
+                console.log('Function result:', data.function, data.result);
+                addFunctionMessage('result', data.function, data.result);
             });
 
             socket.on('conversation_stopped', () => {
@@ -688,8 +699,9 @@
         function handleBotResponse(data) {
             updateStatus('speaking', 'Speaking...');
 
-            // Add bot message
-            addMessage('bot', data.text);
+            // Add bot message (with function indicator if applicable)
+            const functionUsed = data.function_called ? ` <span style="color: #fbbf24; font-size: 0.7rem;">(${data.function_called})</span>` : '';
+            addMessage('bot', data.text, false, functionUsed);
 
             // Play audio if available
             if (data.audio) {
@@ -703,13 +715,16 @@
         }
 
         // ============ Add Message to Chat ============
-        function addMessage(type, text, smartTurnDetected = false) {
+        function addMessage(type, text, smartTurnDetected = false, functionUsed = '') {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message message-${type}`;
 
             let label = type === 'user' ? 'You' : 'Neha';
             if (smartTurnDetected) {
                 label += ' <span style="color: #4ade80; font-size: 0.7rem;">(SmartTurn)</span>';
+            }
+            if (functionUsed) {
+                label += functionUsed;
             }
             messageDiv.innerHTML = `
                 <div class="message-label">${label}</div>
@@ -722,6 +737,35 @@
 
         function scrollToBottom() {
             conversationBox.scrollTop = conversationBox.scrollHeight;
+        }
+
+        // ============ Add Function Call Message ============
+        function addFunctionMessage(type, functionName, data) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            messageDiv.style.textAlign = 'center';
+
+            const icon = type === 'call' ? '&#9881;' : '&#10004;';  // gear or checkmark
+            const color = type === 'call' ? '#fbbf24' : '#4ade80';
+            const label = type === 'call' ? 'Calling' : 'Result';
+
+            let content = '';
+            if (type === 'call') {
+                const args = Object.keys(data).length > 0 ? `(${JSON.stringify(data)})` : '()';
+                content = `${functionName}${args}`;
+            } else {
+                content = typeof data === 'string' ? data.substring(0, 100) + (data.length > 100 ? '...' : '') : JSON.stringify(data);
+            }
+
+            messageDiv.innerHTML = `
+                <div style="display: inline-block; background: rgba(255,255,255,0.05); padding: 8px 16px; border-radius: 20px; font-size: 0.85rem;">
+                    <span style="color: ${color};">${icon} ${label}:</span>
+                    <span style="color: #888; font-family: monospace;">${content}</span>
+                </div>
+            `;
+
+            conversationBox.appendChild(messageDiv);
+            scrollToBottom();
         }
 
         // ============ Play Audio ============

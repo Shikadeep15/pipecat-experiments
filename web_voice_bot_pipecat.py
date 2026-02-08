@@ -76,6 +76,155 @@ VOICES = {
 }
 
 
+# ============ Function Calling (Project 5) ============
+import random
+from datetime import datetime
+
+# Jokes collection
+JOKES = [
+    "Why do programmers prefer dark mode? Because light attracts bugs!",
+    "Why did the developer go broke? Because he used up all his cache!",
+    "What's a computer's favorite snack? Microchips!",
+    "Why do Java developers wear glasses? Because they can't C#!",
+    "How many programmers does it take to change a light bulb? None, that's a hardware problem!",
+    "Why was the JavaScript developer sad? Because he didn't Node how to Express himself!",
+    "What do you call a computer that sings? A-Dell!",
+    "Why did the computer go to the doctor? Because it had a virus!",
+    "What's a robot's favorite type of music? Heavy metal!",
+    "Why don't scientists trust atoms? Because they make up everything!",
+]
+
+# Mock order database
+MOCK_ORDERS = {
+    "12345": {
+        "status": "shipped",
+        "item": "Wireless Headphones",
+        "shipped_date": "February 6, 2026",
+        "estimated_delivery": "February 10, 2026",
+        "tracking": "1Z999AA10123456784"
+    },
+    "67890": {
+        "status": "processing",
+        "item": "Smart Watch",
+        "ordered_date": "February 7, 2026",
+        "estimated_ship": "February 9, 2026"
+    },
+    "11111": {
+        "status": "delivered",
+        "item": "Bluetooth Speaker",
+        "delivered_date": "February 5, 2026",
+        "signed_by": "Front Door"
+    },
+    "99999": {
+        "status": "cancelled",
+        "item": "USB Cable",
+        "cancelled_date": "February 4, 2026",
+        "refund_status": "Refund processed"
+    },
+}
+
+
+def get_current_time() -> str:
+    """Get the current date and time."""
+    now = datetime.now()
+    return now.strftime("%I:%M %p on %A, %B %d, %Y")
+
+
+def tell_joke() -> str:
+    """Return a random joke."""
+    return random.choice(JOKES)
+
+
+def lookup_order(order_id: str) -> str:
+    """Look up order status by order ID."""
+    order_id = str(order_id).strip()
+
+    if order_id in MOCK_ORDERS:
+        order = MOCK_ORDERS[order_id]
+        status = order["status"]
+        item = order["item"]
+
+        if status == "shipped":
+            return (f"Order {order_id} for {item} has been shipped on {order['shipped_date']}. "
+                   f"Expected delivery is {order['estimated_delivery']}. "
+                   f"Tracking number is {order['tracking']}.")
+        elif status == "processing":
+            return (f"Order {order_id} for {item} is currently being processed. "
+                   f"It was ordered on {order['ordered_date']} and should ship by {order['estimated_ship']}.")
+        elif status == "delivered":
+            return (f"Order {order_id} for {item} was delivered on {order['delivered_date']}. "
+                   f"It was signed for at: {order['signed_by']}.")
+        elif status == "cancelled":
+            return (f"Order {order_id} for {item} was cancelled on {order['cancelled_date']}. "
+                   f"{order['refund_status']}.")
+    else:
+        return f"I couldn't find order {order_id}. Please check the order number. Valid test orders are: 12345, 67890, 11111, or 99999."
+
+
+# OpenAI Tools Schema
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Get the current date and time. Use this when the user asks what time it is, what day it is, or wants to know the current date.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "tell_joke",
+            "description": "Tell a random joke. Use this when the user asks for a joke, wants to hear something funny, or asks you to make them laugh.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_order",
+            "description": "Look up the status of an order by its order ID. Use this when the user asks about an order status, tracking, or delivery information.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The order ID to look up (e.g., '12345')"
+                    }
+                },
+                "required": ["order_id"]
+            }
+        }
+    }
+]
+
+
+def execute_function(function_name: str, arguments: dict) -> str:
+    """Execute a function call and return the result."""
+    log(f"[FUNCTION] Calling: {function_name} with args: {arguments}")
+
+    if function_name == "get_current_time":
+        result = get_current_time()
+    elif function_name == "tell_joke":
+        result = tell_joke()
+    elif function_name == "lookup_order":
+        order_id = arguments.get("order_id", "")
+        result = lookup_order(order_id)
+    else:
+        result = f"Unknown function: {function_name}"
+
+    log(f"[FUNCTION] Result: {result[:50]}...")
+    return result
+
+
 # ============ SmartTurn Implementation ============
 class SmartTurnDetector:
     """
@@ -208,9 +357,9 @@ def get_deepgram_url():
     )
 
 
-# ============ OpenAI LLM ============
-def generate_llm_response(user_text: str, conversation_history: list) -> tuple:
-    """Generate response using OpenAI GPT-4o-mini"""
+# ============ OpenAI LLM with Function Calling ============
+def generate_llm_response(user_text: str, conversation_history: list, emit_func=None) -> tuple:
+    """Generate response using OpenAI GPT-4o-mini with function calling support"""
     start_time = time.time()
 
     conversation_history.append({"role": "user", "content": user_text})
@@ -224,24 +373,86 @@ def generate_llm_response(user_text: str, conversation_history: list) -> tuple:
     payload = {
         "model": "gpt-4o-mini",
         "messages": conversation_history,
+        "tools": TOOLS,
+        "tool_choice": "auto",
         "max_tokens": 150,
         "temperature": 0.7,
     }
 
     try:
         response = requests.post(url, json=payload, headers=headers)
-        if response.status_code == 200:
-            result = response.json()
-            assistant_text = result['choices'][0]['message']['content']
+        if response.status_code != 200:
+            log(f"LLM error: {response.status_code}")
+            return "I'm having trouble thinking right now.", 0, None
+
+        result = response.json()
+        message = result['choices'][0]['message']
+
+        # Check if LLM wants to call a function
+        if message.get('tool_calls'):
+            tool_call = message['tool_calls'][0]
+            function_name = tool_call['function']['name']
+            arguments = json.loads(tool_call['function']['arguments']) if tool_call['function']['arguments'] else {}
+
+            # Emit function call event to UI
+            if emit_func:
+                emit_func('function_call', {
+                    'function': function_name,
+                    'arguments': arguments
+                })
+
+            # Execute the function
+            function_result = execute_function(function_name, arguments)
+
+            # Emit function result to UI
+            if emit_func:
+                emit_func('function_result', {
+                    'function': function_name,
+                    'result': function_result
+                })
+
+            # Add function call and result to conversation
+            conversation_history.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": message['tool_calls']
+            })
+            conversation_history.append({
+                "role": "tool",
+                "tool_call_id": tool_call['id'],
+                "content": function_result
+            })
+
+            # Get final response incorporating function result
+            payload_final = {
+                "model": "gpt-4o-mini",
+                "messages": conversation_history,
+                "max_tokens": 150,
+                "temperature": 0.7,
+            }
+
+            response_final = requests.post(url, json=payload_final, headers=headers)
+            if response_final.status_code == 200:
+                result_final = response_final.json()
+                assistant_text = result_final['choices'][0]['message']['content']
+                conversation_history.append({"role": "assistant", "content": assistant_text})
+                llm_time = (time.time() - start_time) * 1000
+                return assistant_text, llm_time, function_name
+            else:
+                return function_result, (time.time() - start_time) * 1000, function_name
+
+        else:
+            # No function call - regular response
+            assistant_text = message.get('content', "I'm not sure how to respond to that.")
             conversation_history.append({"role": "assistant", "content": assistant_text})
             llm_time = (time.time() - start_time) * 1000
-            return assistant_text, llm_time
-        else:
-            log(f"LLM error: {response.status_code}")
-            return "I'm having trouble thinking right now.", 0
+            return assistant_text, llm_time, None
+
     except Exception as e:
         log(f"LLM exception: {e}")
-        return "Sorry, I encountered an error.", 0
+        import traceback
+        traceback.print_exc()
+        return "Sorry, I encountered an error.", 0, None
 
 
 # ============ ElevenLabs TTS ============
@@ -305,10 +516,16 @@ class VoiceBotSession:
         self.conversation_history = [
             {
                 "role": "system",
-                "content": """You are Neha, a friendly and helpful voice assistant.
+                "content": """You are Neha, a friendly and helpful voice assistant with access to tools.
+
+You have access to these functions:
+- get_current_time: Use when asked about the time or date
+- tell_joke: Use when asked for a joke or something funny
+- lookup_order: Use when asked about order status (test IDs: 12345, 67890, 11111, 99999)
+
 Keep your responses concise - 1-2 sentences maximum for natural conversation.
 Be warm and conversational, like talking to a friend.
-You speak with a slight Indian English accent and are very personable."""
+When reporting function results, speak them naturally as if you're having a conversation."""
             }
         ]
 
@@ -414,14 +631,22 @@ You speak with a slight Indian English accent and are very personable."""
                 break
 
     def _process_user_turn(self, user_text: str):
-        """Process complete user turn through LLM and TTS"""
+        """Process complete user turn through LLM and TTS with function calling"""
         e2e_start = time.time()
 
         log(f"[{self.sid[:8]}] USER: {user_text}")
         self._emit('bot_thinking', {'status': 'thinking'})
 
-        # Generate LLM response
-        response_text, llm_time = generate_llm_response(user_text, self.conversation_history)
+        # Generate LLM response (with function calling support)
+        response_text, llm_time, function_called = generate_llm_response(
+            user_text,
+            self.conversation_history,
+            emit_func=self._emit
+        )
+
+        if function_called:
+            log(f"[{self.sid[:8]}] FUNCTION: {function_called}")
+
         log(f"[{self.sid[:8]}] LLM ({llm_time:.0f}ms): {response_text[:50]}...")
 
         # Generate TTS
@@ -437,6 +662,7 @@ You speak with a slight Indian English accent and are very personable."""
             self._emit('bot_response', {
                 'text': response_text,
                 'audio': base64.b64encode(audio_data).decode('utf-8'),
+                'function_called': function_called,
                 'latency': {
                     'llm_ms': round(llm_time),
                     'tts_ttfa_ms': round(ttfa),
