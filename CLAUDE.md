@@ -1,374 +1,234 @@
-# CLAUDE.md - Pipecat Experiments
+# CLAUDE.md - Pipecat Voice Bot Project
 
 ## Project Overview
 
-**Pipecat Experiments** - A sandbox for learning and experimenting with Pipecat, an open-source framework for building voice and multimodal conversational AI applications.
-
-## What is Pipecat?
-
-Pipecat is a framework that makes it easy to build real-time voice AI pipelines by connecting:
-- **STT (Speech-to-Text)**: Deepgram, Whisper, AssemblyAI
-- **LLM (Language Models)**: OpenAI, Anthropic, local models
-- **TTS (Text-to-Speech)**: ElevenLabs, Cartesia, PlayHT
-- **Transports**: Local audio, WebRTC, Twilio, Daily
+**Pipecat Voice Bot** - A real-time voice AI application using the actual Pipecat framework with:
+- VAD (Voice Activity Detection) + SmartTurn for intelligent turn detection
+- Deepgram Nova-3 for Speech-to-Text (NOT Nova-2!)
+- OpenAI GPT-4o-mini for LLM with function calling
+- ElevenLabs for Text-to-Speech
+- WebRTC echo cancellation in browser
 
 ## Quick Start
 
 ```bash
-# Install dependencies (requires Python 3.10+)
-pip install -r requirements.txt
+# Install dependencies
+pip install pipecat-ai[local-smart-turn-v3,websocket] fastapi uvicorn
 
-# On macOS, also install portaudio for PyAudio
-brew install portaudio
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your API keys
 
-# RECOMMENDED: Run Web UI Voice Bot (no headphones needed!)
-python web_voice_bot.py
+# Run the Pipecat voice bot
+python real_pipecat_bot.py
 # Open http://localhost:5002
-
-# Alternative: Run command-line voice bots (headphones required)
-python demo_bot.py            # Simple demo
-python 04_local_voice_bot.py  # With logging
-python 05_smartturn_voice_bot.py  # With SmartTurn
 ```
+
+## Key Concepts
+
+### VAD vs SmartTurn
+
+**VAD (Voice Activity Detection):**
+- Monitors audio energy/amplitude
+- Detects when user starts/stops speaking based on silence
+- Simple threshold-based: 300ms silence = user stopped
+- Problem: Interrupts users who pause to think
+
+**SmartTurn (LocalSmartTurnAnalyzerV3):**
+- ML-based end-of-turn detection
+- Runs AFTER VAD detects silence
+- Analyzes audio features to predict if user is truly done
+- 800ms timeout: waits for confident prediction or more speech
+- Prevents interrupting mid-thought pauses like "um..." or thinking
+
+**How they work together:**
+```
+User speaks → VAD detects speech
+User pauses → VAD detects 300ms silence → triggers "stop"
+           → SmartTurn analyzes: Is this a real stop?
+              - If confident end-of-turn → proceed to STT
+              - If uncertain → wait up to 800ms for more speech
+              - If timeout → force end turn
+```
+
+### Why 800ms Wait?
+
+The 800ms (`stop_secs=0.8`) is SmartTurn's fallback timeout. After VAD detects silence:
+1. SmartTurn's ML model analyzes the audio
+2. If model is confident user is done → proceed immediately
+3. If model is uncertain → wait for either:
+   - More speech from user (they were just pausing)
+   - Confident prediction from model
+   - Timeout reached (800ms) → force proceed
+
+This prevents the bot from interrupting when users say "I want to order... hmm... maybe a pizza" - it waits for the complete thought.
 
 ## Environment Variables
 
 Required in `.env`:
-
-| Variable | Description | Get From |
-|----------|-------------|----------|
-| `OPENAI_API_KEY` | OpenAI API key for GPT | https://platform.openai.com/api-keys |
-| `DEEPGRAM_API_KEY` | Deepgram API key for STT | https://console.deepgram.com |
-| `ELEVENLABS_API_KEY` | ElevenLabs API key for TTS | https://elevenlabs.io |
-| `CARTESIA_API_KEY` | Cartesia API key for low-latency TTS | https://cartesia.ai |
-
-## Examples
-
-### 01_simple_tts.py
-Basic text-to-speech using Cartesia. Demonstrates:
-- Local audio output transport
-- TTS service initialization
-- Pipeline construction
-- Frame queuing
-
-### 02_elevenlabs_tts.py
-TTS using ElevenLabs with the turbo model. Demonstrates:
-- ElevenLabs integration
-- Voice selection
-- Model configuration
-
-### 03_voice_bot.py
-Full conversational voice bot. Demonstrates:
-- Microphone input with VAD (Voice Activity Detection)
-- Speech-to-text with Deepgram
-- LLM conversation with OpenAI
-- Text-to-speech with ElevenLabs
-- Bidirectional audio pipeline
-- Interruption handling
-
-### 04_local_voice_bot.py (Project 2)
-**Local Voice Bot with full verification logging.**
-
-Pipeline: `Microphone → SileroVAD → Deepgram STT → GPT-4o-mini → ElevenLabs TTS → Speaker`
-
-Features:
-- Voice Activity Detection (SileroVAD) for natural turn-taking
-- Interruption handling (speak while bot talks to stop it)
-- Conversation logging with latency metrics
-- System prompt: "You are a helpful assistant. Keep responses under 2 sentences."
-
-```bash
-python 04_local_voice_bot.py
+```
+DEEPGRAM_API_KEY=your_key      # Deepgram API key (Nova-3 STT)
+OPENAI_API_KEY=your_key        # OpenAI API key (GPT-4o-mini)
+ELEVENLABS_API_KEY=your_key    # ElevenLabs API key (TTS)
 ```
 
-**Verification:**
-- Bot starts and listens
-- Transcription works (logged as `[TURN N] USER: ...`)
-- LLM generates response (logged as `[ASSISTANT] ...`)
-- TTS plays through speakers (logged as `[TTS] Speaking...`)
-- Interruption handling works (logged as `[INTERRUPT]`)
-- Latency displayed (`[LATENCY] Time to first response: X.XXs`)
-
-### 05_smartturn_voice_bot.py (Project 3)
-**Voice Bot with SmartTurn for intelligent turn detection.**
-
-Pipeline: `Mic → VAD → SmartTurn → Deepgram STT → GPT-4o-mini → ElevenLabs TTS → Speaker`
-
-SmartTurn uses AI to detect when you've actually finished speaking, not just
-when you pause. This prevents the bot from interrupting during:
-- Thinking pauses ("I want to order... hmm... maybe a pizza")
-- Natural speech hesitations
-- Mid-sentence breaths
-
-```bash
-python 05_smartturn_voice_bot.py
-```
-
-**Key Configuration:**
-- VAD `stop_secs=0.2` (short, so SmartTurn can take over)
-- SmartTurn analyzes ~65ms of audio to determine if user is done
-- Works best with 16kHz mono PCM audio (up to 8 seconds)
-
-**Verification:**
-- Test with: "I want to order... hmm... maybe a pizza"
-- Bot should wait for complete thought, not respond at "hmm"
-- Logs show `[SMARTTURN] Analyzing if user finished their thought...`
-
-### 06_latency_optimized_bot.py (Project 4)
-**Latency-optimized voice bot with detailed timing breakdown.**
-
-Tracks every stage of the pipeline:
-- **STT**: Time from VAD silence to transcription
-- **LLM**: Time from transcription to first token (TTFT)
-- **TTS**: Time from first LLM token to first audio byte (TTFA)
-- **E2E**: Total end-to-end latency
-
-```bash
-# Default (GPT-4o-mini - fastest)
-python 06_latency_optimized_bot.py
-
-# Compare with GPT-4o
-python 06_latency_optimized_bot.py --model gpt-4o
-
-# Compare with GPT-4-turbo
-python 06_latency_optimized_bot.py --model gpt-4-turbo
-```
-
-**Sample Output:**
-```
-[VAD] User stopped speaking @ 1234567890.123
-[STT] Transcription received @ 1234567890.456 (STT: 333ms)
-[USER] What's the weather like today?
-[LLM] First token @ 1234567890.789 (LLM TTFT: 333ms)
-[ASSISTANT] I don't have access to weather data, but you can check...
-[TTS] First audio @ 1234567891.012 (TTS TTFA: 223ms)
-
-============================================================
-[E2E LATENCY] 889ms total
-  STT:    333ms ████████████████
-  LLM:    333ms ████████████████ (gpt-4o-mini)
-  TTS:    223ms ███████████
-  Status: 🟢 EXCELLENT (target: <1500ms)
-============================================================
-```
-
-**Latency Targets:**
-| Status | E2E Latency | Description |
-|--------|-------------|-------------|
-| 🟢 EXCELLENT | <1000ms | Feels instant |
-| 🟡 GOOD | 1000-1500ms | Natural conversation |
-| 🟠 ACCEPTABLE | 1500-2000ms | Noticeable but usable |
-| 🔴 NEEDS WORK | >2000ms | Feels slow |
-
-### web_voice_bot.py (Web UI - Recommended)
-**Web-based Voice Bot with WebRTC Echo Cancellation + SmartTurn**
-
-This is the **recommended way** to run the voice bot - no headphones needed!
-
-```bash
-python web_voice_bot.py
-# Open http://localhost:5002
-```
-
-**Why Web UI is Better:**
-- **WebRTC Echo Cancellation**: Browser's built-in echo cancellation filters out the bot's voice
-- **No Headphones Required**: The bot won't hear itself, preventing feedback loops
-- **Visual Interface**: See transcriptions, responses, and latency metrics in real-time
-- **Voice Selection**: Choose from multiple ElevenLabs voices (Neha, George, Jessica, etc.)
-
-**Pipeline:**
-```
-Browser Mic (WebRTC) → Deepgram STT → GPT-4o-mini → ElevenLabs TTS → Browser Audio
-```
-
-**Key Features:**
-- Browser WebRTC audio capture with `echoCancellation: true`
-- Noise suppression and auto gain control
-- Real-time transcription display (interim + final)
-- SmartTurn-like behavior using Deepgram's `speech_final` flag
-- Latency breakdown (LLM, TTS TTFA, TTS Total, E2E)
-- Multiple voice options
-
-**Voice Options:**
-| Voice | Description |
-|-------|-------------|
-| Neha | Warm, friendly Indian English (default) |
-| George | Deep, authoritative US male |
-| Jessica | Clear, professional US female |
-| Charlie | Upbeat, enthusiastic |
-| Sarah | Confident, warm |
-
-### 07_function_calling_bot.py (Project 5)
-**Voice bot with function calling / tool use.**
-
-The LLM can call functions based on user queries:
-
-| Function | Trigger | Example |
-|----------|---------|---------|
-| `get_current_time` | "What time is it?" | Returns current date/time |
-| `tell_joke` | "Tell me a joke" | Returns random programmer joke |
-| `lookup_order` | "Order status for 12345?" | Returns mock order info |
-
-```bash
-python 07_function_calling_bot.py
-```
-
-**Test Order IDs:**
-- `12345` - Shipped (with tracking)
-- `67890` - Processing
-- `11111` - Delivered
-- `99999` - Cancelled
-
-**Sample Output:**
-```
-[TURN 1] USER: What time is it?
-============================================================
-[FUNCTION CALL] get_current_time
-[FUNCTION RESULT] 08:45 AM on Tuesday, February 04, 2026
-[LLM] Generating response...
-[ASSISTANT] It's currently 8:45 AM on Tuesday, February 4th, 2026.
-[TTS] Speaking...
-```
-
-**How Function Calling Works:**
-1. User asks a question via voice
-2. Deepgram transcribes the speech
-3. GPT-4o-mini decides if a function is needed
-4. If yes, function executes and returns result
-5. LLM incorporates result into natural response
-6. ElevenLabs speaks the response
-
-## Pipecat Architecture
+## Pipeline Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Pipeline                         │
-│                                                     │
-│  Input → STT → Context → LLM → TTS → Output        │
-│    │      │       │       │     │      │           │
-│  [Mic]  [Deepgram] [Memory] [GPT] [11Labs] [Speaker]│
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                     PIPECAT VOICE PIPELINE                       │
+└─────────────────────────────────────────────────────────────────┘
+
+Browser (WebRTC)          Server (Pipecat)              APIs
+      │                         │                         │
+      │ getUserMedia()          │                         │
+      │ echoCancellation:true   │                         │
+      │ sampleRate:16000        │                         │
+      ▼                         │                         │
+┌──────────┐  WebSocket    ┌─────────┐                    │
+│ Mic Audio│ ───────────►  │   VAD   │ (Silero)           │
+└──────────┘               │ 300ms   │                    │
+                           └────┬────┘                    │
+                                │ User stopped speaking   │
+                                ▼                         │
+                           ┌─────────┐                    │
+                           │SmartTurn│ (ML model)         │
+                           │ 800ms   │                    │
+                           └────┬────┘                    │
+                                │ Confirmed end-of-turn   │
+                                ▼                         │
+                           ┌─────────┐              ┌──────────┐
+                           │   STT   │ ──────────►  │ Deepgram │
+                           │         │              │ Nova-3   │
+                           └────┬────┘              └──────────┘
+                                │ Final transcript        │
+                                ▼                         │
+                           ┌─────────┐              ┌──────────┐
+                           │   LLM   │ ──────────►  │  OpenAI  │
+                           │         │  streaming   │GPT-4o-mini│
+                           └────┬────┘              └──────────┘
+                                │ Response text           │
+                                ▼                         │
+                           ┌─────────┐              ┌──────────┐
+                           │   TTS   │ ──────────►  │ElevenLabs│
+                           │         │  streaming   │ Turbo v2 │
+                           └────┬────┘              └──────────┘
+                                │ Audio chunks            │
+      ┌──────────┐              │                         │
+      │ Speaker  │ ◄────────────┘                         │
+      └──────────┘                                        │
 ```
 
-### Key Concepts
+## Latency Breakdown
 
-- **Frames**: Data units flowing through the pipeline (audio, text, control)
-- **Processors**: Transform or react to frames
-- **Services**: External API integrations (STT, LLM, TTS)
-- **Transports**: Handle I/O (audio devices, WebRTC, telephony)
-- **Pipeline**: Connects processors in sequence
-- **PipelineTask**: Manages a running pipeline
+**Formula:** `End-to-End = VAD/SmartTurn + LLM TTFT + TTS TTFS`
 
-## Common Frame Types
+| Component | Metric | Expected |
+|-----------|--------|----------|
+| VAD/SmartTurn | Time from silence to transcript | 100-800ms |
+| LLM | TTFT (Time To First Token) | 300-600ms |
+| TTS | TTFS (Time To First Speech) | 500-600ms |
+| **Total E2E** | VAD stop → First audio | 900-2000ms |
 
-| Frame | Purpose |
-|-------|---------|
-| `AudioRawFrame` | Raw audio data |
-| `TranscriptionFrame` | STT output text |
-| `TextFrame` | Generic text |
-| `LLMMessagesFrame` | Messages for LLM |
-| `TTSSpeakFrame` | Text to synthesize |
-| `EndFrame` | Signals pipeline completion |
+**Note:** TTS TTFS is typically 500-600ms, not 200ms as sometimes quoted.
 
-## Voice Options
+## Key Files
 
-### ElevenLabs Voices
-| Name | Voice ID | Description |
-|------|----------|-------------|
-| George | JBFqnCBsd6RMkjVDRZzb | US male (deep) |
-| Jessica | cgSgspJ2msm6clMCkdW9 | US female |
-| Riya | Zs2gGSc3xT4kRfIqS9R3 | Indian English female |
+```
+pipecat-experiments/
+├── real_pipecat_bot.py       # Main Pipecat voice bot (USE THIS)
+├── web_voice_bot_pipecat.py  # Legacy custom implementation
+├── CLAUDE.md                 # This file
+├── .env                      # API keys (not committed)
+└── .env.example              # Template for API keys
+```
 
-### Cartesia Voices
-| Name | Voice ID | Description |
-|------|----------|-------------|
-| British Lady | 71a7ad14-091c-4e8e-a314-022ece01c121 | British accent |
-| Friendly Australian | a38e4e85-e815-4c3c-9b7c-a0b08d0e0b74 | Australian accent |
+## Pipecat Components Used
+
+| Component | Pipecat Class | Purpose |
+|-----------|---------------|---------|
+| VAD | `SileroVADAnalyzer` | Detect speech/silence |
+| SmartTurn | `LocalSmartTurnAnalyzerV3` | ML end-of-turn detection |
+| STT | `DeepgramSTTService` | Speech to text (Nova-3) |
+| LLM | `OpenAILLMService` | Generate responses |
+| TTS | `ElevenLabsTTSService` | Text to speech |
+| Pipeline | `Pipeline` | Connect processors |
+| Task | `PipelineTask` | Run pipeline |
+
+## Configuration
+
+### VAD Settings
+```python
+VADParams(
+    threshold=0.5,              # Speech detection confidence
+    min_speech_duration_ms=250, # Min speech to trigger start
+    min_silence_duration_ms=300 # Silence to trigger stop
+)
+```
+
+### SmartTurn Settings
+```python
+SmartTurnParams(
+    stop_secs=0.8,      # 800ms timeout after VAD stop
+    pre_speech_ms=500   # Audio before speech to analyze
+)
+```
+
+### Deepgram Settings
+```python
+LiveOptions(
+    model="nova-3",          # Latest model (NOT nova-2!)
+    interim_results=False,   # Only final transcripts
+    endpointing=300,         # 300ms utterance boundary
+    punctuate=True,
+    smart_format=True
+)
+```
+
+## Function Calling
+
+The bot supports these functions:
+- `get_current_time()` - Returns current date/time
+- `tell_joke()` - Returns a random joke
+- `lookup_order(order_id)` - Looks up order status (test IDs: 12345, 67890)
+
+Example queries:
+- "What time is it?"
+- "Tell me a joke"
+- "What's the status of order 12345?"
+
+## Implementation Details
+
+### Non-Streaming Input
+Input is **NOT streaming** - the bot only triggers on the **final transcript** from Deepgram, not interim results:
+```python
+LiveOptions(
+    interim_results=False,  # Only final transcripts
+)
+```
+
+### Correct Latency Tracking
+```python
+# E2E = VAD/SmartTurn stop → TTS first audio
+latency = {
+    'vad_to_transcript_ms': transcript_time - vad_stop_time,
+    'llm_ttft_ms': llm_first_token - llm_start,
+    'tts_ttfs_ms': tts_first_audio - tts_start,
+    'e2e_ms': tts_first_audio - vad_stop_time
+}
+```
 
 ## Troubleshooting
 
-### PyAudio Installation Issues
-```bash
-# macOS
-brew install portaudio
-pip install pyaudio
+1. **No transcription:** Check DEEPGRAM_API_KEY is valid
+2. **SmartTurn not loading:** Run `pip install pipecat-ai[local-smart-turn-v3]`
+3. **High latency:** LLM is usually the bottleneck; consider response length
+4. **Echo issues:** Ensure browser echoCancellation is enabled
+5. **TTS fails:** Check ELEVENLABS_API_KEY quota
 
-# Ubuntu/Debian
-sudo apt-get install portaudio19-dev
-pip install pyaudio
-```
+## References
 
-### No Audio Output
-- Check system volume and output device
-- Verify API keys are set in `.env`
-- Run with DEBUG logging to see errors
-
-### High Latency
-- Use Cartesia TTS (40ms TTFA) instead of ElevenLabs
-- Use `eleven_turbo_v2` model for ElevenLabs
-- Enable VAD to reduce processing of silence
-
-## Verification Checklist
-
-### Project 1: Install Pipecat
-- [x] Pipecat installed successfully (v0.0.101)
-- [x] All dependencies resolved
-- [x] .env file configured with API keys
-- [x] Can import pipecat without errors (all 8 tests pass)
-
-### Project 2: Local Voice Bot
-- [x] Bot starts and listens
-- [x] Deepgram STT connection works
-- [x] ElevenLabs TTS connection works
-- [x] Pipeline linked correctly
-- [x] VAD (Silero) loaded
-- [x] Interruption handling enabled (`allow_interruptions=True`)
-- [ ] 5-turn conversation completed
-- [ ] Latency under 2 seconds
-
-### Project 3: SmartTurn Integration
-- [x] SmartTurn model loaded successfully
-- [x] Integrated with VAD (stop_secs=0.2)
-- [x] Pipeline configured correctly
-- [ ] Bot waits for complete thoughts
-- [ ] Doesn't interrupt during thinking pauses
-- [ ] Feels more natural than VAD alone
-
-### Project 4: Latency Measurement & Optimization
-- [x] Latency logging implemented (STT, LLM, TTS, E2E)
-- [x] Visual breakdown with bar chart
-- [x] Model comparison support (--model flag)
-- [x] Average latency tracking (every 3 turns)
-- [ ] Measured average latency under 1.5 seconds
-- [ ] Compared GPT-4o-mini vs GPT-4o latency
-
-### Project 5: Function Calling
-- [x] get_current_time function implemented
-- [x] tell_joke function implemented
-- [x] lookup_order function implemented (mock data)
-- [x] Functions registered with LLM
-- [ ] Time function works via voice
-- [ ] Joke function works via voice
-- [ ] Order lookup works via voice
-- [ ] General questions work without functions
-
-### Web Voice Bot (Recommended)
-- [x] Flask server with WebSocket (Socket.IO)
-- [x] Browser WebRTC audio capture with echo cancellation
-- [x] Deepgram STT integration
-- [x] OpenAI GPT-4o-mini LLM
-- [x] ElevenLabs TTS (streaming)
-- [x] Multiple voice selection
-- [x] Real-time latency tracking
-- [x] SmartTurn-like turn detection (speech_final)
-- [ ] Full conversation tested without echo
-- [ ] Voice selection working
-- [ ] Latency under 2 seconds
-
-## Resources
-
-- [Pipecat Documentation](https://docs.pipecat.ai)
-- [Pipecat GitHub](https://github.com/pipecat-ai/pipecat)
-- [Pipecat Examples](https://github.com/pipecat-ai/pipecat/tree/main/examples)
-- [ElevenLabs Voices](https://elevenlabs.io/voice-library)
-- [Deepgram Nova Models](https://developers.deepgram.com/docs/models)
+- [Pipecat Documentation](https://docs.pipecat.ai/)
+- [Deepgram Nova-3](https://deepgram.com/product/nova)
+- [ElevenLabs API](https://elevenlabs.io/docs)
+- [OpenAI Function Calling](https://platform.openai.com/docs/guides/function-calling)

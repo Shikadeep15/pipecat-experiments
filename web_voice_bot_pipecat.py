@@ -147,20 +147,15 @@ def lookup_order(order_id: str) -> str:
         item = order["item"]
 
         if status == "shipped":
-            return (f"Order {order_id} for {item} has been shipped on {order['shipped_date']}. "
-                   f"Expected delivery is {order['estimated_delivery']}. "
-                   f"Tracking number is {order['tracking']}.")
+            return f"Order {order_id} shipped. Arriving {order['estimated_delivery']}."
         elif status == "processing":
-            return (f"Order {order_id} for {item} is currently being processed. "
-                   f"It was ordered on {order['ordered_date']} and should ship by {order['estimated_ship']}.")
+            return f"Order {order_id} processing. Ships by {order['estimated_ship']}."
         elif status == "delivered":
-            return (f"Order {order_id} for {item} was delivered on {order['delivered_date']}. "
-                   f"It was signed for at: {order['signed_by']}.")
+            return f"Order {order_id} delivered on {order['delivered_date']}."
         elif status == "cancelled":
-            return (f"Order {order_id} for {item} was cancelled on {order['cancelled_date']}. "
-                   f"{order['refund_status']}.")
+            return f"Order {order_id} was cancelled. Refund processed."
     else:
-        return f"I couldn't find order {order_id}. Please check the order number. Valid test orders are: 12345, 67890, 11111, or 99999."
+        return f"Order {order_id} not found. Try 12345, 67890, 11111, or 99999."
 
 
 # OpenAI Tools Schema
@@ -255,31 +250,25 @@ class SmartTurnDetector:
     def is_thought_complete(self, text: str) -> bool:
         """
         Analyze if the utterance appears to be a complete thought.
-        This is the core of SmartTurn logic.
+        Simplified for faster response.
         """
         text = text.strip().lower()
         words = text.split()
 
-        # Too short - probably not complete
-        if len(words) < self.min_utterance_length:
+        if not words:
             return False
 
-        # Ends with sentence-ending punctuation
-        if any(text.rstrip().endswith(end) for end in self.complete_endings):
+        # Ends with sentence-ending punctuation - COMPLETE
+        if text.rstrip().endswith(('.', '!', '?')):
             return True
 
-        # Ends with incomplete indicator - user is thinking
+        # Ends with thinking words - NOT complete
         last_word = words[-1].rstrip('.,!?')
         if last_word in self.incomplete_indicators:
             return False
 
-        # Check for question patterns
-        question_starters = ['what', 'where', 'when', 'why', 'how', 'who', 'which', 'is', 'are', 'can', 'could', 'would', 'should', 'do', 'does', 'did']
-        if words[0] in question_starters and len(words) >= 4:
-            return True
-
-        # Default: if it's long enough and doesn't end with thinking words, consider complete
-        if len(words) >= 5:
+        # 3+ words without thinking words - probably complete
+        if len(words) >= 3:
             return True
 
         return False
@@ -295,26 +284,23 @@ class SmartTurnDetector:
             self.last_speech_time = current_time
 
         if is_final and transcript:
-            self.utterance_buffer.append(transcript)
+            # Replace buffer with latest final transcript (not append)
+            self.utterance_buffer = [transcript]
             self.last_final_time = current_time
 
-            # If Deepgram says speech is final, check if thought is complete
-            if speech_final:
-                full_utterance = ' '.join(self.utterance_buffer)
+            # Check if thought is complete (don't wait for speech_final)
+            if self.is_thought_complete(transcript):
+                self.utterance_buffer = []
+                self.pending_utterance = None
+                return transcript
+            else:
+                # Store as pending - wait for timeout
+                self.pending_utterance = transcript
 
-                # SmartTurn logic: check if thought appears complete
-                if self.is_thought_complete(full_utterance):
-                    self.utterance_buffer = []
-                    return full_utterance
-                else:
-                    # Store as pending - might get more
-                    self.pending_utterance = full_utterance
-                    return None
-
-        # Check for timeout on pending utterance
+        # Check for timeout on pending utterance (reduced to 0.5s for faster response)
         if self.pending_utterance and self.last_final_time:
             silence_duration = current_time - self.last_final_time
-            if silence_duration >= self.silence_threshold:
+            if silence_duration >= 0.5:  # 500ms timeout
                 result = self.pending_utterance
                 self.pending_utterance = None
                 self.utterance_buffer = []
@@ -359,10 +345,11 @@ def get_deepgram_url():
     )
 
 
-# ============ OpenAI LLM with Function Calling ============
+# ============ OpenAI LLM with Function Calling + Streaming ============
 def generate_llm_response(user_text: str, conversation_history: list, emit_func=None) -> tuple:
-    """Generate response using OpenAI GPT-4o-mini with function calling support"""
+    """Generate response using OpenAI GPT-4o-mini - FAST mode, skip second LLM call for functions"""
     start_time = time.time()
+    first_token_time = None
 
     conversation_history.append({"role": "user", "content": user_text})
 
@@ -372,89 +359,92 @@ def generate_llm_response(user_text: str, conversation_history: list, emit_func=
         "Content-Type": "application/json"
     }
 
+    # Trim conversation history aggressively
+    if len(conversation_history) > 5:
+        conversation_history[:] = [conversation_history[0]] + conversation_history[-4:]
+
     payload = {
         "model": "gpt-4o-mini",
         "messages": conversation_history,
         "tools": TOOLS,
         "tool_choice": "auto",
-        "max_tokens": 150,
-        "temperature": 0.7,
+        "max_tokens": 50,
+        "temperature": 0.1,
+        "stream": True,
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, stream=True)
         if response.status_code != 200:
             log(f"LLM error: {response.status_code}")
-            return "I'm having trouble thinking right now.", 0, None
+            return "I'm having trouble right now.", 0, None
 
-        result = response.json()
-        message = result['choices'][0]['message']
+        collected_content = ""
+        tool_calls_data = {}
 
-        # Check if LLM wants to call a function
-        if message.get('tool_calls'):
-            tool_call = message['tool_calls'][0]
+        for line in response.iter_lines():
+            if line:
+                line_text = line.decode('utf-8')
+                if line_text.startswith('data: '):
+                    data_str = line_text[6:]
+                    if data_str == '[DONE]':
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        delta = chunk['choices'][0].get('delta', {})
+
+                        if first_token_time is None and (delta.get('content') or delta.get('tool_calls')):
+                            first_token_time = time.time()
+
+                        if delta.get('content'):
+                            collected_content += delta['content']
+
+                        if delta.get('tool_calls'):
+                            for tc in delta['tool_calls']:
+                                idx = tc.get('index', 0)
+                                if idx not in tool_calls_data:
+                                    tool_calls_data[idx] = {'id': '', 'function': {'name': '', 'arguments': ''}}
+                                if tc.get('id'):
+                                    tool_calls_data[idx]['id'] = tc['id']
+                                if tc.get('function', {}).get('name'):
+                                    tool_calls_data[idx]['function']['name'] = tc['function']['name']
+                                if tc.get('function', {}).get('arguments'):
+                                    tool_calls_data[idx]['function']['arguments'] += tc['function']['arguments']
+                    except json.JSONDecodeError:
+                        continue
+
+        ttft = (first_token_time - start_time) * 1000 if first_token_time else 0
+        log(f"[LLM] TTFT: {ttft:.0f}ms")
+
+        # Function call - execute and return result DIRECTLY (no second LLM call!)
+        if tool_calls_data:
+            tool_call = tool_calls_data[0]
             function_name = tool_call['function']['name']
             arguments = json.loads(tool_call['function']['arguments']) if tool_call['function']['arguments'] else {}
 
-            # Emit function call event to UI
             if emit_func:
-                emit_func('function_call', {
-                    'function': function_name,
-                    'arguments': arguments
-                })
+                emit_func('function_call', {'function': function_name, 'arguments': arguments})
 
-            # Execute the function
+            # Execute function
             function_result = execute_function(function_name, arguments)
 
-            # Emit function result to UI
             if emit_func:
-                emit_func('function_result', {
-                    'function': function_name,
-                    'result': function_result
-                })
+                emit_func('function_result', {'function': function_name, 'result': function_result})
 
-            # Add function call and result to conversation
-            conversation_history.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": message['tool_calls']
-            })
-            conversation_history.append({
-                "role": "tool",
-                "tool_call_id": tool_call['id'],
-                "content": function_result
-            })
-
-            # Get final response incorporating function result
-            payload_final = {
-                "model": "gpt-4o-mini",
-                "messages": conversation_history,
-                "max_tokens": 150,
-                "temperature": 0.7,
-            }
-
-            response_final = requests.post(url, json=payload_final, headers=headers)
-            if response_final.status_code == 200:
-                result_final = response_final.json()
-                assistant_text = result_final['choices'][0]['message']['content']
-                conversation_history.append({"role": "assistant", "content": assistant_text})
-                llm_time = (time.time() - start_time) * 1000
-                return assistant_text, llm_time, function_name
-            else:
-                return function_result, (time.time() - start_time) * 1000, function_name
+            # SKIP second LLM call - return function result directly for speed!
+            conversation_history.append({"role": "assistant", "content": function_result})
+            llm_time = (time.time() - start_time) * 1000
+            return function_result, llm_time, function_name
 
         else:
-            # No function call - regular response
-            assistant_text = message.get('content', "I'm not sure how to respond to that.")
+            assistant_text = collected_content or "How can I help?"
             conversation_history.append({"role": "assistant", "content": assistant_text})
             llm_time = (time.time() - start_time) * 1000
             return assistant_text, llm_time, None
 
     except Exception as e:
         log(f"LLM exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return "Sorry, I encountered an error.", 0, None
+        return "Sorry, an error occurred.", 0, None
 
 
 # ============ ElevenLabs TTS ============
@@ -473,12 +463,12 @@ def generate_tts(text: str, voice_id: str = 'Zs2gGSc3xT4kRfIqS9R3') -> tuple:
         'text': text,
         'model_id': 'eleven_turbo_v2',
         'voice_settings': {
-            'stability': 0.5,
-            'similarity_boost': 0.75,
+            'stability': 0.3,           # Reduced for speed
+            'similarity_boost': 0.5,    # Reduced for speed
             'style': 0.0,
-            'use_speaker_boost': True
+            'use_speaker_boost': False  # Disabled for speed
         },
-        'optimize_streaming_latency': 3
+        'optimize_streaming_latency': 4  # Maximum optimization (0-4)
     }
 
     try:
@@ -514,20 +504,11 @@ class VoiceBotSession:
         # SmartTurn detector
         self.smart_turn = SmartTurnDetector()
 
-        # Conversation history
+        # Conversation history - MINIMAL prompt for speed
         self.conversation_history = [
             {
                 "role": "system",
-                "content": """You are Neha, a friendly and helpful voice assistant with access to tools.
-
-You have access to these functions:
-- get_current_time: Use when asked about the time or date
-- tell_joke: Use when asked for a joke or something funny
-- lookup_order: Use when asked about order status (test IDs: 12345, 67890, 11111, 99999)
-
-Keep your responses concise - 1-2 sentences maximum for natural conversation.
-Be warm and conversational, like talking to a friend.
-When reporting function results, speak them naturally as if you're having a conversation."""
+                "content": "Brief voice assistant. 1 sentence max. Use tools for time/jokes/orders."
             }
         ]
 
@@ -598,9 +579,19 @@ When reporting function results, speak them naturally as if you're having a conv
 
                 result = json.loads(message)
 
+                # Debug: log all messages from Deepgram
+                msg_type = result.get('type', 'unknown')
+                if msg_type != 'Results':
+                    log(f"[{self.sid[:8]}] Deepgram: {msg_type}")
+
                 if result.get('type') == 'Results':
                     channel = result.get('channel', {})
                     alternatives = channel.get('alternatives', [])
+                    is_final = result.get('is_final', False)
+                    speech_final = result.get('speech_final', False)
+                    # Debug with flags
+                    if alternatives and alternatives[0].get('transcript'):
+                        log(f"[{self.sid[:8]}] STT: final={is_final} speech_final={speech_final} '{alternatives[0]['transcript'][:40]}'")
 
                     if alternatives:
                         transcript = alternatives[0].get('transcript', '')
@@ -779,12 +770,7 @@ def plivo_answer():
     plivo_conversations[call_uuid] = [
         {
             "role": "system",
-            "content": """You are a friendly and helpful voice assistant on a phone call.
-Keep your responses very concise - 1 sentence maximum since this is a phone call.
-Be warm and conversational. You have access to these functions:
-- get_current_time: Use when asked about the time or date
-- tell_joke: Use when asked for a joke
-- lookup_order: Use when asked about order status (test IDs: 12345, 67890, 11111, 99999)"""
+            "content": "Brief phone assistant. 1 sentence max. Use tools for time/jokes/orders."
         }
     ]
 
@@ -808,7 +794,7 @@ def plivo_input(call_uuid):
     # Get or create conversation history
     if call_uuid not in plivo_conversations:
         plivo_conversations[call_uuid] = [
-            {"role": "system", "content": "You are a helpful voice assistant. Keep responses to 1 sentence."}
+            {"role": "system", "content": "Brief phone assistant. 1 sentence max."}
         ]
 
     # Generate LLM response
@@ -892,6 +878,12 @@ def handle_audio_data(data):
     if sid in active_sessions:
         try:
             audio_bytes = base64.b64decode(data['audio'])
+            # Debug: log audio receipt occasionally
+            if not hasattr(handle_audio_data, 'count'):
+                handle_audio_data.count = 0
+            handle_audio_data.count += 1
+            if handle_audio_data.count % 50 == 1:
+                log(f"[AUDIO] Receiving audio chunks... ({len(audio_bytes)} bytes)")
             active_sessions[sid].send_audio(audio_bytes)
         except Exception as e:
             log(f"Audio error: {e}")
@@ -935,16 +927,7 @@ def handle_text_message(data):
         conversation_history = [
             {
                 "role": "system",
-                "content": """You are a friendly and helpful voice assistant with access to tools.
-
-You have access to these functions:
-- get_current_time: Use when asked about the time or date
-- tell_joke: Use when asked for a joke or something funny
-- lookup_order: Use when asked about order status (test IDs: 12345, 67890, 11111, 99999)
-
-Keep your responses concise - 1-2 sentences maximum for natural conversation.
-Be warm and conversational, like talking to a friend.
-When reporting function results, speak them naturally as if you're having a conversation."""
+                "content": "Brief voice assistant. 1 sentence max. Use tools for time/jokes/orders."
             }
         ]
     else:
